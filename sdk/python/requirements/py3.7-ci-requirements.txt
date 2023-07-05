@@ -245,7 +245,7 @@ googleapis-common-protos==1.52.0
     #   tensorflow-metadata
 great-expectations==0.14.8
     # via feast (setup.py)
-grpcio==1.44.0
+grpcio==1.53.0
     # via
     #   feast (setup.py)
     #   google-api-core
