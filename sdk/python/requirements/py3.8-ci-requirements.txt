@@ -654,7 +654,7 @@ ruamel.yaml.clib==0.2.6
     # via ruamel.yaml
 s3transfer==0.5.2
     # via boto3
-scipy==1.8.0
+scipy==1.10.0
     # via great-expectations
 send2trash==1.8.0
     # via notebook
