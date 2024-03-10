@@ -24,8 +24,8 @@ import com.google.inject.*;
 import com.google.inject.Module;
 import com.google.inject.util.Modules;
 import feast.proto.serving.ServingServiceGrpc;
-import feast.serving.config.*;
-import feast.serving.grpc.OnlineServingGrpcServiceV2;
+import feast.serving.service.config.*;
+import feast.serving.service.grpc.OnlineServingGrpcServiceV2;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
@@ -33,6 +33,7 @@ import io.grpc.util.MutableHandlerRegistry;
 import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -45,7 +46,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 abstract class ServingEnvironment {
   static DockerComposeContainer environment;
-
+  static int serverPort = getFreePort();
   ServingServiceGrpc.ServingServiceBlockingStub servingStub;
   Injector injector;
   String serverName;
@@ -53,22 +54,35 @@ abstract class ServingEnvironment {
   Server server;
   MutableHandlerRegistry serviceRegistry;
 
-  static int serverPort = getFreePort();
-
   @BeforeAll
   static void globalSetup() {
     environment =
         new DockerComposeContainer(
                 new File("src/test/resources/docker-compose/docker-compose-redis-it.yml"))
             .withExposedService("redis", 6379)
-            .withExposedService("feast", 8080)
-            .waitingFor("feast", Wait.forListeningPort());
+            .withExposedService(
+                "feast", 8080, Wait.forListeningPort().withStartupTimeout(Duration.ofSeconds(180)))
+            .withTailChildContainers(true);
     environment.start();
   }
 
   @AfterAll
   static void globalTeardown() {
     environment.stop();
+  }
+
+  private static int getFreePort() {
+    ServerSocket serverSocket;
+    try {
+      serverSocket = new ServerSocket(0);
+    } catch (IOException e) {
+      throw new RuntimeException("Couldn't allocate port");
+    }
+
+    assertThat(serverSocket, is(notNullValue()));
+    assertThat(serverSocket.getLocalPort(), greaterThan(0));
+
+    return serverSocket.getLocalPort();
   }
 
   @BeforeEach
@@ -106,16 +120,16 @@ abstract class ServingEnvironment {
     Module overrideConfig = registryConfig();
     Module registryConfig;
     if (overrideConfig != null) {
-      registryConfig = Modules.override(new RegistryConfig()).with(registryConfig());
+      registryConfig = Modules.override(new RegistryConfigModule()).with(registryConfig());
     } else {
-      registryConfig = new RegistryConfig();
+      registryConfig = new RegistryConfigModule();
     }
 
     injector =
         Guice.createInjector(
-            new ServingServiceConfigV2(),
+            new ServingServiceV2Module(),
             registryConfig,
-            new InstrumentationConfig(),
+            new InstrumentationConfigModule(),
             appPropertiesModule,
             new ServerModule());
 
@@ -154,19 +168,5 @@ abstract class ServingEnvironment {
 
   AbstractModule registryConfig() {
     return null;
-  }
-
-  private static int getFreePort() {
-    ServerSocket serverSocket;
-    try {
-      serverSocket = new ServerSocket(0);
-    } catch (IOException e) {
-      throw new RuntimeException("Couldn't allocate port");
-    }
-
-    assertThat(serverSocket, is(notNullValue()));
-    assertThat(serverSocket.getLocalPort(), greaterThan(0));
-
-    return serverSocket.getLocalPort();
   }
 }

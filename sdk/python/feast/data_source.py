@@ -11,29 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 import enum
+import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from datetime import timedelta
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+
+from google.protobuf.duration_pb2 import Duration
+from google.protobuf.json_format import MessageToJson
+from typeguard import typechecked
 
 from feast import type_map
 from feast.data_format import StreamFormat
+from feast.field import Field
 from feast.protos.feast.core.DataSource_pb2 import DataSource as DataSourceProto
 from feast.repo_config import RepoConfig, get_data_source_class_from_type
+from feast.types import from_value_type
 from feast.value_type import ValueType
-
-
-class SourceType(enum.Enum):
-    """
-    DataSource value type. Used to define source types in DataSource.
-    """
-
-    UNKNOWN = 0
-    BATCH_FILE = 1
-    BATCH_BIGQUERY = 2
-    STREAM_KAFKA = 3
-    STREAM_KINESIS = 4
 
 
 class KafkaOptions:
@@ -42,11 +36,16 @@ class KafkaOptions:
     """
 
     def __init__(
-        self, bootstrap_servers: str, message_format: StreamFormat, topic: str,
+        self,
+        kafka_bootstrap_servers: str,
+        message_format: StreamFormat,
+        topic: str,
+        watermark_delay_threshold: Optional[timedelta] = None,
     ):
-        self.bootstrap_servers = bootstrap_servers
+        self.kafka_bootstrap_servers = kafka_bootstrap_servers
         self.message_format = message_format
         self.topic = topic
+        self.watermark_delay_threshold = watermark_delay_threshold or None
 
     @classmethod
     def from_proto(cls, kafka_options_proto: DataSourceProto.KafkaOptions):
@@ -57,13 +56,20 @@ class KafkaOptions:
             kafka_options_proto: A protobuf representation of a DataSource
 
         Returns:
-            Returns a BigQueryOptions object based on the kafka_options protobuf
+            Returns a KafkaOptions object based on the kafka_options protobuf
         """
-
+        watermark_delay_threshold = None
+        if kafka_options_proto.HasField("watermark_delay_threshold"):
+            watermark_delay_threshold = (
+                timedelta(days=0)
+                if kafka_options_proto.watermark_delay_threshold.ToNanoseconds() == 0
+                else kafka_options_proto.watermark_delay_threshold.ToTimedelta()
+            )
         kafka_options = cls(
-            bootstrap_servers=kafka_options_proto.bootstrap_servers,
+            kafka_bootstrap_servers=kafka_options_proto.kafka_bootstrap_servers,
             message_format=StreamFormat.from_proto(kafka_options_proto.message_format),
             topic=kafka_options_proto.topic,
+            watermark_delay_threshold=watermark_delay_threshold,
         )
 
         return kafka_options
@@ -75,11 +81,16 @@ class KafkaOptions:
         Returns:
             KafkaOptionsProto protobuf
         """
+        watermark_delay_threshold = None
+        if self.watermark_delay_threshold is not None:
+            watermark_delay_threshold = Duration()
+            watermark_delay_threshold.FromTimedelta(self.watermark_delay_threshold)
 
         kafka_options_proto = DataSourceProto.KafkaOptions(
-            bootstrap_servers=self.bootstrap_servers,
+            kafka_bootstrap_servers=self.kafka_bootstrap_servers,
             message_format=self.message_format.to_proto(),
             topic=self.topic,
+            watermark_delay_threshold=watermark_delay_threshold,
         )
 
         return kafka_options_proto
@@ -91,7 +102,10 @@ class KinesisOptions:
     """
 
     def __init__(
-        self, record_format: StreamFormat, region: str, stream_name: str,
+        self,
+        record_format: StreamFormat,
+        region: str,
+        stream_name: str,
     ):
         self.record_format = record_format
         self.region = region
@@ -134,62 +148,123 @@ class KinesisOptions:
         return kinesis_options_proto
 
 
+_DATA_SOURCE_OPTIONS = {
+    DataSourceProto.SourceType.BATCH_FILE: "feast.infra.offline_stores.file_source.FileSource",
+    DataSourceProto.SourceType.BATCH_BIGQUERY: "feast.infra.offline_stores.bigquery_source.BigQuerySource",
+    DataSourceProto.SourceType.BATCH_REDSHIFT: "feast.infra.offline_stores.redshift_source.RedshiftSource",
+    DataSourceProto.SourceType.BATCH_SNOWFLAKE: "feast.infra.offline_stores.snowflake_source.SnowflakeSource",
+    DataSourceProto.SourceType.BATCH_TRINO: "feast.infra.offline_stores.contrib.trino_offline_store.trino_source.TrinoSource",
+    DataSourceProto.SourceType.BATCH_SPARK: "feast.infra.offline_stores.contrib.spark_offline_store.spark_source.SparkSource",
+    DataSourceProto.SourceType.BATCH_ATHENA: "feast.infra.offline_stores.contrib.athena_offline_store.athena_source.AthenaSource",
+    DataSourceProto.SourceType.STREAM_KAFKA: "feast.data_source.KafkaSource",
+    DataSourceProto.SourceType.STREAM_KINESIS: "feast.data_source.KinesisSource",
+    DataSourceProto.SourceType.REQUEST_SOURCE: "feast.data_source.RequestSource",
+    DataSourceProto.SourceType.PUSH_SOURCE: "feast.data_source.PushSource",
+}
+
+
+@typechecked
 class DataSource(ABC):
     """
     DataSource that can be used to source features.
 
     Args:
         name: Name of data source, which should be unique within a project
-        event_timestamp_column (optional): Event timestamp column used for point in time
-            joins of feature values.
+        timestamp_field (optional): Event timestamp field used for point-in-time joins of
+            feature values.
         created_timestamp_column (optional): Timestamp column indicating when the row
             was created, used for deduplicating rows.
         field_mapping (optional): A dictionary mapping of column names in this data
             source to feature names in a feature table or view. Only used for feature
             columns, not entity or timestamp columns.
-        date_partition_column (optional): Timestamp column used for partitioning.
+        description (optional) A human-readable description.
+        tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+        owner (optional): The owner of the data source, typically the email of the primary
+            maintainer.
+        date_partition_column (optional): Timestamp column used for partitioning. Not supported by all offline stores.
     """
 
     name: str
-    event_timestamp_column: str
+    timestamp_field: str
     created_timestamp_column: str
     field_mapping: Dict[str, str]
+    description: str
+    tags: Dict[str, str]
+    owner: str
     date_partition_column: str
 
     def __init__(
         self,
+        *,
         name: str,
-        event_timestamp_column: Optional[str] = None,
+        timestamp_field: Optional[str] = None,
         created_timestamp_column: Optional[str] = None,
         field_mapping: Optional[Dict[str, str]] = None,
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
         date_partition_column: Optional[str] = None,
     ):
-        """Creates a DataSource object."""
+        """
+        Creates a DataSource object.
+
+        Args:
+            name: Name of data source, which should be unique within a project.
+            timestamp_field (optional): Event timestamp field used for point-in-time joins of
+                feature values.
+            created_timestamp_column (optional): Timestamp column indicating when the row
+                was created, used for deduplicating rows.
+            field_mapping (optional): A dictionary mapping of column names in this data
+                source to feature names in a feature table or view. Only used for feature
+                columns, not entity or timestamp columns.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the data source, typically the email of the primary
+                maintainer.
+            date_partition_column (optional): Timestamp column used for partitioning. Not supported by all stores
+        """
         self.name = name
-        self.event_timestamp_column = (
-            event_timestamp_column if event_timestamp_column else ""
-        )
+        self.timestamp_field = timestamp_field or ""
         self.created_timestamp_column = (
             created_timestamp_column if created_timestamp_column else ""
         )
         self.field_mapping = field_mapping if field_mapping else {}
+        if (
+            self.timestamp_field
+            and self.timestamp_field == self.created_timestamp_column
+        ):
+            raise ValueError(
+                "Please do not use the same column for 'timestamp_field' and 'created_timestamp_column'."
+            )
+        self.description = description or ""
+        self.tags = tags or {}
+        self.owner = owner or ""
         self.date_partition_column = (
             date_partition_column if date_partition_column else ""
         )
 
     def __hash__(self):
-        return hash((id(self), self.name))
+        return hash((self.name, self.timestamp_field))
+
+    def __str__(self):
+        return str(MessageToJson(self.to_proto()))
 
     def __eq__(self, other):
+        if other is None:
+            return False
+
         if not isinstance(other, DataSource):
             raise TypeError("Comparisons should only involve DataSource class objects.")
 
         if (
             self.name != other.name
-            or self.event_timestamp_column != other.event_timestamp_column
+            or self.timestamp_field != other.timestamp_field
             or self.created_timestamp_column != other.created_timestamp_column
             or self.field_mapping != other.field_mapping
             or self.date_partition_column != other.date_partition_column
+            or self.description != other.description
+            or self.tags != other.tags
+            or self.owner != other.owner
         ):
             return False
 
@@ -210,48 +285,19 @@ class DataSource(ABC):
         Raises:
             ValueError: The type of DataSource could not be identified.
         """
-        if data_source.data_source_class_type:
-            cls = get_data_source_class_from_type(data_source.data_source_class_type)
-            return cls.from_proto(data_source)
-
-        if data_source.request_data_options and data_source.request_data_options.schema:
-            data_source_obj = RequestDataSource.from_proto(data_source)
-        elif data_source.file_options.file_format and data_source.file_options.file_url:
-            from feast.infra.offline_stores.file_source import FileSource
-
-            data_source_obj = FileSource.from_proto(data_source)
-        elif (
-            data_source.bigquery_options.table_ref or data_source.bigquery_options.query
+        data_source_type = data_source.type
+        if not data_source_type or (
+            data_source_type
+            not in list(_DATA_SOURCE_OPTIONS.keys())
+            + [DataSourceProto.SourceType.CUSTOM_SOURCE]
         ):
-            from feast.infra.offline_stores.bigquery_source import BigQuerySource
-
-            data_source_obj = BigQuerySource.from_proto(data_source)
-        elif data_source.redshift_options.table or data_source.redshift_options.query:
-            from feast.infra.offline_stores.redshift_source import RedshiftSource
-
-            data_source_obj = RedshiftSource.from_proto(data_source)
-
-        elif data_source.snowflake_options.table or data_source.snowflake_options.query:
-            from feast.infra.offline_stores.snowflake_source import SnowflakeSource
-
-            data_source_obj = SnowflakeSource.from_proto(data_source)
-
-        elif (
-            data_source.kafka_options.bootstrap_servers
-            and data_source.kafka_options.topic
-            and data_source.kafka_options.message_format
-        ):
-            data_source_obj = KafkaSource.from_proto(data_source)
-        elif (
-            data_source.kinesis_options.record_format
-            and data_source.kinesis_options.region
-            and data_source.kinesis_options.stream_name
-        ):
-            data_source_obj = KinesisSource.from_proto(data_source)
-        else:
             raise ValueError("Could not identify the source type being added.")
 
-        return data_source_obj
+        if data_source_type == DataSourceProto.SourceType.CUSTOM_SOURCE:
+            cls = get_data_source_class_from_type(data_source.data_source_class_type)
+            return cls.from_proto(data_source)
+        cls = get_data_source_class_from_type(_DATA_SOURCE_OPTIONS[data_source_type])
+        return cls.from_proto(data_source)
 
     @abstractmethod
     def to_proto(self) -> DataSourceProto:
@@ -295,37 +341,76 @@ class DataSource(ABC):
         raise NotImplementedError
 
 
+@typechecked
 class KafkaSource(DataSource):
-    def validate(self, config: RepoConfig):
-        pass
-
-    def get_table_column_names_and_types(
-        self, config: RepoConfig
-    ) -> Iterable[Tuple[str, str]]:
-        pass
-
     def __init__(
         self,
+        *,
         name: str,
-        event_timestamp_column: str,
-        bootstrap_servers: str,
+        timestamp_field: str,
         message_format: StreamFormat,
-        topic: str,
+        bootstrap_servers: Optional[str] = None,
+        kafka_bootstrap_servers: Optional[str] = None,
+        topic: Optional[str] = None,
         created_timestamp_column: Optional[str] = "",
         field_mapping: Optional[Dict[str, str]] = None,
-        date_partition_column: Optional[str] = "",
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
+        batch_source: Optional[DataSource] = None,
+        watermark_delay_threshold: Optional[timedelta] = None,
     ):
+        """
+        Creates a KafkaSource object.
+
+        Args:
+            name: Name of data source, which should be unique within a project
+            timestamp_field: Event timestamp field used for point-in-time joins of feature values.
+            message_format: StreamFormat of serialized messages.
+            bootstrap_servers: (Deprecated) The servers of the kafka broker in the form "localhost:9092".
+            kafka_bootstrap_servers (optional): The servers of the kafka broker in the form "localhost:9092".
+            topic (optional): The name of the topic to read from in the kafka source.
+            created_timestamp_column (optional): Timestamp column indicating when the row
+                was created, used for deduplicating rows.
+            field_mapping (optional): A dictionary mapping of column names in this data
+                source to feature names in a feature table or view. Only used for feature
+                columns, not entity or timestamp columns.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the data source, typically the email of the primary
+                maintainer.
+            batch_source (optional): The datasource that acts as a batch source.
+            watermark_delay_threshold (optional): The watermark delay threshold for stream data.
+                Specifically how late stream data can arrive without being discarded.
+        """
+        if bootstrap_servers:
+            warnings.warn(
+                (
+                    "The 'bootstrap_servers' parameter has been deprecated in favor of 'kafka_bootstrap_servers'. "
+                    "Feast 0.25 and onwards will not support the 'bootstrap_servers' parameter."
+                ),
+                DeprecationWarning,
+            )
+
         super().__init__(
-            name,
-            event_timestamp_column,
-            created_timestamp_column,
-            field_mapping,
-            date_partition_column,
+            name=name,
+            timestamp_field=timestamp_field,
+            created_timestamp_column=created_timestamp_column,
+            field_mapping=field_mapping,
+            description=description,
+            tags=tags,
+            owner=owner,
         )
+        self.batch_source = batch_source
+
+        kafka_bootstrap_servers = kafka_bootstrap_servers or bootstrap_servers or ""
+        topic = topic or ""
+
         self.kafka_options = KafkaOptions(
-            bootstrap_servers=bootstrap_servers,
+            kafka_bootstrap_servers=kafka_bootstrap_servers,
             message_format=message_format,
             topic=topic,
+            watermark_delay_threshold=watermark_delay_threshold,
         )
 
     def __eq__(self, other):
@@ -334,29 +419,51 @@ class KafkaSource(DataSource):
                 "Comparisons should only involve KafkaSource class objects."
             )
 
+        if not super().__eq__(other):
+            return False
+
         if (
-            self.kafka_options.bootstrap_servers
-            != other.kafka_options.bootstrap_servers
+            self.kafka_options.kafka_bootstrap_servers
+            != other.kafka_options.kafka_bootstrap_servers
             or self.kafka_options.message_format != other.kafka_options.message_format
             or self.kafka_options.topic != other.kafka_options.topic
+            or self.kafka_options.watermark_delay_threshold
+            != other.kafka_options.watermark_delay_threshold
         ):
             return False
 
         return True
 
+    def __hash__(self):
+        return super().__hash__()
+
     @staticmethod
     def from_proto(data_source: DataSourceProto):
+        watermark_delay_threshold = None
+        if data_source.kafka_options.watermark_delay_threshold:
+            watermark_delay_threshold = (
+                timedelta(days=0)
+                if data_source.kafka_options.watermark_delay_threshold.ToNanoseconds()
+                == 0
+                else data_source.kafka_options.watermark_delay_threshold.ToTimedelta()
+            )
         return KafkaSource(
             name=data_source.name,
             field_mapping=dict(data_source.field_mapping),
-            bootstrap_servers=data_source.kafka_options.bootstrap_servers,
+            kafka_bootstrap_servers=data_source.kafka_options.kafka_bootstrap_servers,
             message_format=StreamFormat.from_proto(
                 data_source.kafka_options.message_format
             ),
+            watermark_delay_threshold=watermark_delay_threshold,
             topic=data_source.kafka_options.topic,
-            event_timestamp_column=data_source.event_timestamp_column,
             created_timestamp_column=data_source.created_timestamp_column,
-            date_partition_column=data_source.date_partition_column,
+            timestamp_field=data_source.timestamp_field,
+            description=data_source.description,
+            tags=dict(data_source.tags),
+            owner=data_source.owner,
+            batch_source=DataSource.from_proto(data_source.batch_source)
+            if data_source.batch_source
+            else None,
         )
 
     def to_proto(self) -> DataSourceProto:
@@ -365,13 +472,24 @@ class KafkaSource(DataSource):
             type=DataSourceProto.STREAM_KAFKA,
             field_mapping=self.field_mapping,
             kafka_options=self.kafka_options.to_proto(),
+            description=self.description,
+            tags=self.tags,
+            owner=self.owner,
         )
 
-        data_source_proto.event_timestamp_column = self.event_timestamp_column
+        data_source_proto.timestamp_field = self.timestamp_field
         data_source_proto.created_timestamp_column = self.created_timestamp_column
-        data_source_proto.date_partition_column = self.date_partition_column
-
+        if self.batch_source:
+            data_source_proto.batch_source.MergeFrom(self.batch_source.to_proto())
         return data_source_proto
+
+    def validate(self, config: RepoConfig):
+        raise NotImplementedError
+
+    def get_table_column_names_and_types(
+        self, config: RepoConfig
+    ) -> Iterable[Tuple[str, str]]:
+        raise NotImplementedError
 
     @staticmethod
     def source_datatype_to_feast_value_type() -> Callable[[str], ValueType]:
@@ -381,51 +499,102 @@ class KafkaSource(DataSource):
         raise NotImplementedError
 
 
-class RequestDataSource(DataSource):
+@typechecked
+class RequestSource(DataSource):
     """
-    RequestDataSource that can be used to provide input features for on demand transforms
+    RequestSource that can be used to provide input features for on demand transforms
 
-    Args:
+    Attributes:
         name: Name of the request data source
         schema: Schema mapping from the input feature name to a ValueType
+        description: A human-readable description.
+        tags: A dictionary of key-value pairs to store arbitrary metadata.
+        owner: The owner of the request data source, typically the email of the primary
+            maintainer.
     """
 
     name: str
-    schema: Dict[str, ValueType]
+    schema: List[Field]
+    description: str
+    tags: Dict[str, str]
+    owner: str
 
     def __init__(
-        self, name: str, schema: Dict[str, ValueType],
+        self,
+        *,
+        name: str,
+        schema: List[Field],
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
     ):
-        """Creates a RequestDataSource object."""
-        super().__init__(name)
+        """Creates a RequestSource object."""
+        super().__init__(name=name, description=description, tags=tags, owner=owner)
         self.schema = schema
 
     def validate(self, config: RepoConfig):
-        pass
+        raise NotImplementedError
 
     def get_table_column_names_and_types(
         self, config: RepoConfig
     ) -> Iterable[Tuple[str, str]]:
-        pass
+        raise NotImplementedError
+
+    def __eq__(self, other):
+        if not isinstance(other, RequestSource):
+            raise TypeError(
+                "Comparisons should only involve RequestSource class objects."
+            )
+
+        if not super().__eq__(other):
+            return False
+
+        if isinstance(self.schema, List) and isinstance(other.schema, List):
+            for field1, field2 in zip(self.schema, other.schema):
+                if field1 != field2:
+                    return False
+            return True
+        else:
+            return False
+
+    def __hash__(self):
+        return super().__hash__()
 
     @staticmethod
     def from_proto(data_source: DataSourceProto):
         schema_pb = data_source.request_data_options.schema
-        schema = {}
-        for key in schema_pb.keys():
-            schema[key] = ValueType(schema_pb.get(key))
-        return RequestDataSource(name=data_source.name, schema=schema)
+        list_schema = []
+        for field_proto in schema_pb:
+            list_schema.append(Field.from_proto(field_proto))
+
+        return RequestSource(
+            name=data_source.name,
+            schema=list_schema,
+            description=data_source.description,
+            tags=dict(data_source.tags),
+            owner=data_source.owner,
+        )
 
     def to_proto(self) -> DataSourceProto:
-        schema_pb = {}
-        for key, value in self.schema.items():
-            schema_pb[key] = value.value
-        options = DataSourceProto.RequestDataOptions(schema=schema_pb)
+
+        schema_pb = []
+
+        if isinstance(self.schema, Dict):
+            for key, value in self.schema.items():
+                schema_pb.append(
+                    Field(name=key, dtype=from_value_type(value.value)).to_proto()
+                )
+        else:
+            for field in self.schema:
+                schema_pb.append(field.to_proto())
         data_source_proto = DataSourceProto(
             name=self.name,
             type=DataSourceProto.REQUEST_SOURCE,
-            request_data_options=options,
+            description=self.description,
+            tags=self.tags,
+            owner=self.owner,
         )
+        data_source_proto.request_data_options.schema.extend(schema_pb)
 
         return data_source_proto
 
@@ -437,71 +606,86 @@ class RequestDataSource(DataSource):
         raise NotImplementedError
 
 
+@typechecked
 class KinesisSource(DataSource):
     def validate(self, config: RepoConfig):
-        pass
+        raise NotImplementedError
 
     def get_table_column_names_and_types(
         self, config: RepoConfig
     ) -> Iterable[Tuple[str, str]]:
-        pass
+        raise NotImplementedError
 
     @staticmethod
     def from_proto(data_source: DataSourceProto):
         return KinesisSource(
             name=data_source.name,
+            timestamp_field=data_source.timestamp_field,
             field_mapping=dict(data_source.field_mapping),
             record_format=StreamFormat.from_proto(
                 data_source.kinesis_options.record_format
             ),
             region=data_source.kinesis_options.region,
             stream_name=data_source.kinesis_options.stream_name,
-            event_timestamp_column=data_source.event_timestamp_column,
             created_timestamp_column=data_source.created_timestamp_column,
-            date_partition_column=data_source.date_partition_column,
+            description=data_source.description,
+            tags=dict(data_source.tags),
+            owner=data_source.owner,
+            batch_source=DataSource.from_proto(data_source.batch_source)
+            if data_source.batch_source
+            else None,
         )
 
     @staticmethod
     def source_datatype_to_feast_value_type() -> Callable[[str], ValueType]:
-        pass
+        raise NotImplementedError
 
     def get_table_query_string(self) -> str:
         raise NotImplementedError
 
     def __init__(
         self,
+        *,
         name: str,
-        event_timestamp_column: str,
-        created_timestamp_column: str,
         record_format: StreamFormat,
         region: str,
         stream_name: str,
+        timestamp_field: Optional[str] = "",
+        created_timestamp_column: Optional[str] = "",
         field_mapping: Optional[Dict[str, str]] = None,
-        date_partition_column: Optional[str] = "",
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
+        batch_source: Optional[DataSource] = None,
     ):
+        if record_format is None:
+            raise ValueError("Record format must be specified for kinesis source")
+
         super().__init__(
-            name,
-            event_timestamp_column,
-            created_timestamp_column,
-            field_mapping,
-            date_partition_column,
+            name=name,
+            timestamp_field=timestamp_field,
+            created_timestamp_column=created_timestamp_column,
+            field_mapping=field_mapping,
+            description=description,
+            tags=tags,
+            owner=owner,
         )
+        self.batch_source = batch_source
         self.kinesis_options = KinesisOptions(
             record_format=record_format, region=region, stream_name=stream_name
         )
 
     def __eq__(self, other):
-        if other is None:
-            return False
-
         if not isinstance(other, KinesisSource):
             raise TypeError(
                 "Comparisons should only involve KinesisSource class objects."
             )
 
+        if not super().__eq__(other):
+            return False
+
         if (
-            self.name != other.name
-            or self.kinesis_options.record_format != other.kinesis_options.record_format
+            self.kinesis_options.record_format != other.kinesis_options.record_format
             or self.kinesis_options.region != other.kinesis_options.region
             or self.kinesis_options.stream_name != other.kinesis_options.stream_name
         ):
@@ -509,16 +693,123 @@ class KinesisSource(DataSource):
 
         return True
 
+    def __hash__(self):
+        return super().__hash__()
+
     def to_proto(self) -> DataSourceProto:
         data_source_proto = DataSourceProto(
             name=self.name,
             type=DataSourceProto.STREAM_KINESIS,
             field_mapping=self.field_mapping,
             kinesis_options=self.kinesis_options.to_proto(),
+            description=self.description,
+            tags=self.tags,
+            owner=self.owner,
         )
 
-        data_source_proto.event_timestamp_column = self.event_timestamp_column
+        data_source_proto.timestamp_field = self.timestamp_field
         data_source_proto.created_timestamp_column = self.created_timestamp_column
-        data_source_proto.date_partition_column = self.date_partition_column
+        if self.batch_source:
+            data_source_proto.batch_source.MergeFrom(self.batch_source.to_proto())
 
         return data_source_proto
+
+
+class PushMode(enum.Enum):
+    ONLINE = 1
+    OFFLINE = 2
+    ONLINE_AND_OFFLINE = 3
+
+
+@typechecked
+class PushSource(DataSource):
+    """
+    A source that can be used to ingest features on request
+    """
+
+    # TODO(adchia): consider adding schema here in case where Feast manages pushing events to the offline store
+    # TODO(adchia): consider a "mode" to support pushing raw vs transformed events
+    batch_source: DataSource
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        batch_source: DataSource,
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
+    ):
+        """
+        Creates a PushSource object.
+
+        Args:
+            name: Name of the push source
+            batch_source: The batch source that backs this push source. It's used when materializing from the offline
+                store to the online store, and when retrieving historical features.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the data source, typically the email of the primary
+                maintainer.
+        """
+        super().__init__(name=name, description=description, tags=tags, owner=owner)
+        self.batch_source = batch_source
+
+    def __eq__(self, other):
+        if not isinstance(other, PushSource):
+            return False
+
+        if not super().__eq__(other):
+            return False
+
+        if self.batch_source != other.batch_source:
+            return False
+
+        return True
+
+    def __hash__(self):
+        return super().__hash__()
+
+    def validate(self, config: RepoConfig):
+        raise NotImplementedError
+
+    def get_table_column_names_and_types(
+        self, config: RepoConfig
+    ) -> Iterable[Tuple[str, str]]:
+        raise NotImplementedError
+
+    @staticmethod
+    def from_proto(data_source: DataSourceProto):
+        assert data_source.HasField("batch_source")
+        batch_source = DataSource.from_proto(data_source.batch_source)
+
+        return PushSource(
+            name=data_source.name,
+            batch_source=batch_source,
+            description=data_source.description,
+            tags=dict(data_source.tags),
+            owner=data_source.owner,
+        )
+
+    def to_proto(self) -> DataSourceProto:
+        batch_source_proto = None
+        if self.batch_source:
+            batch_source_proto = self.batch_source.to_proto()
+
+        data_source_proto = DataSourceProto(
+            name=self.name,
+            type=DataSourceProto.PUSH_SOURCE,
+            description=self.description,
+            tags=self.tags,
+            owner=self.owner,
+            batch_source=batch_source_proto,
+        )
+
+        return data_source_proto
+
+    def get_table_query_string(self) -> str:
+        raise NotImplementedError
+
+    @staticmethod
+    def source_datatype_to_feast_value_type() -> Callable[[str], ValueType]:
+        raise NotImplementedError

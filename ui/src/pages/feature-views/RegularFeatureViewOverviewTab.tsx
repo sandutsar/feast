@@ -11,16 +11,17 @@ import {
 } from "@elastic/eui";
 import React from "react";
 
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router-dom";
 import FeaturesListDisplay from "../../components/FeaturesListDisplay";
 import TagsDisplay from "../../components/TagsDisplay";
-import { encodeSearchQueryString } from "../../hooks/useSearchInputWithTags";
-import { FeastFeatureViewType } from "../../parsers/feastFeatureViews";
+import { encodeSearchQueryString } from "../../hooks/encodeSearchQueryString";
 import { EntityRelation } from "../../parsers/parseEntityRelationships";
 import { FEAST_FCO_TYPES } from "../../parsers/types";
 import useLoadRelationshipData from "../../queries/useLoadRelationshipsData";
 import BatchSourcePropertiesView from "../data-sources/BatchSourcePropertiesView";
 import ConsumingFeatureServicesList from "./ConsumingFeatureServicesList";
+import { feast } from "../../protos";
+import { toDate } from "../../utils/timestamp";
 
 const whereFSconsumesThisFv = (fvName: string) => {
   return (r: EntityRelation) => {
@@ -32,7 +33,7 @@ const whereFSconsumesThisFv = (fvName: string) => {
 };
 
 interface RegularFeatureViewOverviewTabProps {
-  data: FeastFeatureViewType;
+  data: feast.core.IFeatureView;
 }
 
 const RegularFeatureViewOverviewTab = ({
@@ -49,8 +50,8 @@ const RegularFeatureViewOverviewTab = ({
 
   const fsNames = relationshipQuery.data
     ? relationshipQuery.data.filter(whereFSconsumesThisFv(fvName)).map((fs) => {
-        return fs.target.name;
-      })
+      return fs.target.name;
+    })
     : [];
   const numOfFs = fsNames.length;
 
@@ -60,43 +61,24 @@ const RegularFeatureViewOverviewTab = ({
         <EuiFlexItem>
           <EuiStat title={`${numOfFs}`} description="Consuming Services" />
         </EuiFlexItem>
-        {data.spec.batchSource.meta ? (
-          <EuiFlexItem>
-            <EuiStat
-              title={data.spec.batchSource.meta.latestEventTimestamp.toLocaleDateString(
-                "en-CA"
-              )}
-              description="Latest Event Time"
-              titleColor="subdued"
-            />
-          </EuiFlexItem>
-        ) : (
-          <EuiText>No batchSource specified on this feature view.</EuiText>
-        )}
-        {data.meta.lastUpdatedTimestamp && (
-          <EuiFlexItem>
-            <EuiStat
-              title={data.meta.lastUpdatedTimestamp.toLocaleDateString("en-CA")}
-              description="Last Updated"
-            />
-          </EuiFlexItem>
-        )}
       </EuiFlexGroup>
       <EuiSpacer size="l" />
       <EuiFlexGroup>
         <EuiFlexItem>
           <EuiPanel hasBorder={true}>
             <EuiTitle size="xs">
-              <h3>Features ({data.spec.features.length})</h3>
+              <h3>Features ({data?.spec?.features?.length})</h3>
             </EuiTitle>
             <EuiHorizontalRule margin="xs" />
-            {data.spec.features ? (
+            {projectName && data?.spec?.features ? (
               <FeaturesListDisplay
-                featureViewName={data.spec.name}
+                projectName={projectName}
+                featureViewName={data?.spec?.name!}
                 features={data.spec.features}
+                link={true}
               />
             ) : (
-              <EuiText>No Tags specified on this feature view.</EuiText>
+              <EuiText>No features specified on this feature view.</EuiText>
             )}
           </EuiPanel>
         </EuiFlexItem>
@@ -106,7 +88,7 @@ const RegularFeatureViewOverviewTab = ({
               <h3>Entities</h3>
             </EuiTitle>
             <EuiHorizontalRule margin="xs" />
-            {data.spec.entities ? (
+            {data?.spec?.entities ? (
               <EuiFlexGroup wrap responsive={false} gutterSize="xs">
                 {data.spec.entities.map((entity) => {
                   return (
@@ -114,7 +96,7 @@ const RegularFeatureViewOverviewTab = ({
                       <EuiBadge
                         color="primary"
                         onClick={() => {
-                          navigate(`/p/${projectName}/entity/${entity}`);
+                          navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/entity/${entity}`);
                         }}
                         onClickAriaLabel={entity}
                         data-test-sub="testExample1"
@@ -147,15 +129,17 @@ const RegularFeatureViewOverviewTab = ({
               <h3>Tags</h3>
             </EuiTitle>
             <EuiHorizontalRule margin="xs" />
-            {data.spec.tags ? (
+            {data?.spec?.tags ? (
               <TagsDisplay
                 tags={data.spec.tags}
                 createLink={(key, value) => {
                   return (
-                    `/p/${projectName}/feature-view?` +
+                    `${process.env.PUBLIC_URL || ""}/p/${projectName}/feature-view?` +
                     encodeSearchQueryString(`${key}:${value}`)
                   );
                 }}
+                owner={data?.spec?.owner!}
+                description={data?.spec?.description!}
               />
             ) : (
               <EuiText>No Tags specified on this feature view.</EuiText>
@@ -171,7 +155,7 @@ const RegularFeatureViewOverviewTab = ({
               <h3>Batch Source</h3>
             </EuiTitle>
             <EuiHorizontalRule margin="xs" />
-            <BatchSourcePropertiesView batchSource={data.spec.batchSource} />
+            <BatchSourcePropertiesView batchSource={data?.spec?.batchSource!} />
           </EuiPanel>
         </EuiFlexItem>
       </EuiFlexGroup>
@@ -181,11 +165,11 @@ const RegularFeatureViewOverviewTab = ({
           <h3>Materialization Intervals</h3>
         </EuiTitle>
         <React.Fragment>
-          {data.meta.materializationIntervals?.map((interval, i) => {
+          {data?.meta?.materializationIntervals?.map((interval, i) => {
             return (
               <p key={i}>
-                {interval.startTime.toLocaleDateString("en-CA")} to{" "}
-                {interval.endTime.toLocaleDateString("en-CA")}
+                {toDate(interval.startTime!).toLocaleDateString("en-CA")} to{" "}
+                {toDate(interval.endTime!).toLocaleDateString("en-CA")}
               </p>
             );
           })}

@@ -19,6 +19,7 @@ import BatchSourcePropertiesView from "./BatchSourcePropertiesView";
 import FeatureViewEdgesList from "../entities/FeatureViewEdgesList";
 import RequestDataSourceSchemaTable from "./RequestDataSourceSchemaTable";
 import useLoadDataSource from "./useLoadDataSource";
+import { feast } from "../../protos";
 
 const DataSourceOverviewTab = () => {
   let { dataSourceName } = useParams();
@@ -27,7 +28,6 @@ const DataSourceOverviewTab = () => {
   const { isLoading, isSuccess, isError, data, consumingFeatureViews } =
     useLoadDataSource(dsName);
   const isEmpty = data === undefined;
-  console.log(consumingFeatureViews);
 
   return (
     <React.Fragment>
@@ -51,18 +51,18 @@ const DataSourceOverviewTab = () => {
                     <EuiHorizontalRule margin="xs" />
                     {data.fileOptions || data.bigqueryOptions ? (
                       <BatchSourcePropertiesView batchSource={data} />
-                    ) : data.requestDataOptions ? (
+                    ) : data.type ? (
                       <React.Fragment>
                         <EuiDescriptionList>
                           <EuiDescriptionListTitle>
                             Source Type
                           </EuiDescriptionListTitle>
                           <EuiDescriptionListDescription>
-                            {data.type}
+                            {feast.core.DataSource.SourceType[data.type]}
                           </EuiDescriptionListDescription>
                         </EuiDescriptionList>
                       </React.Fragment>
-                    ): (
+                    ) : (
                       ""
                     )}
                   </EuiPanel>
@@ -78,14 +78,12 @@ const DataSourceOverviewTab = () => {
                       </EuiTitle>
                       <EuiHorizontalRule margin="xs"></EuiHorizontalRule>
                       <RequestDataSourceSchemaTable
-                        fields={Object.entries(
-                          data.requestDataOptions.schema
-                        ).map(([field, type]) => {
+                        fields={data?.requestDataOptions?.schema!.map((obj) => {
                           return {
-                            fieldName: field,
-                            valueType: type,
+                            fieldName: obj.name!,
+                            valueType: obj.valueType!,
                           };
-                        })}
+                        })!}
                       />
                     </EuiPanel>
                   ) : (

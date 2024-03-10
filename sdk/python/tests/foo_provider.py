@@ -1,15 +1,17 @@
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import pandas
+import pyarrow
 from tqdm import tqdm
 
-from feast import Entity, FeatureView, RepoConfig
+from feast import Entity, FeatureService, FeatureView, RepoConfig
 from feast.infra.offline_stores.offline_store import RetrievalJob
 from feast.infra.provider import Provider
+from feast.infra.registry.base_registry import BaseRegistry
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
-from feast.registry import Registry
 from feast.saved_dataset import SavedDataset
 
 
@@ -29,7 +31,10 @@ class FooProvider(Provider):
         pass
 
     def teardown_infra(
-        self, project: str, tables: Sequence[FeatureView], entities: Sequence[Entity],
+        self,
+        project: str,
+        tables: Sequence[FeatureView],
+        entities: Sequence[Entity],
     ):
         pass
 
@@ -50,7 +55,7 @@ class FooProvider(Provider):
         feature_view: FeatureView,
         start_date: datetime,
         end_date: datetime,
-        registry: Registry,
+        registry: BaseRegistry,
         project: str,
         tqdm_builder: Callable[[int], tqdm],
     ) -> None:
@@ -62,20 +67,39 @@ class FooProvider(Provider):
         feature_views: List[FeatureView],
         feature_refs: List[str],
         entity_df: Union[pandas.DataFrame, str],
-        registry: Registry,
+        registry: BaseRegistry,
         project: str,
         full_feature_names: bool = False,
     ) -> RetrievalJob:
-        pass
+        return RetrievalJob()
 
     def online_read(
         self,
         config: RepoConfig,
         table: FeatureView,
         entity_keys: List[EntityKeyProto],
-        requested_features: List[str] = None,
+        requested_features: Optional[List[str]] = None,
     ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
-        pass
+        return []
 
     def retrieve_saved_dataset(self, config: RepoConfig, dataset: SavedDataset):
         pass
+
+    def write_feature_service_logs(
+        self,
+        feature_service: FeatureService,
+        logs: Union[pyarrow.Table, Path],
+        config: RepoConfig,
+        registry: BaseRegistry,
+    ):
+        pass
+
+    def retrieve_feature_service_logs(
+        self,
+        feature_service: FeatureService,
+        start_date: datetime,
+        end_date: datetime,
+        config: RepoConfig,
+        registry: BaseRegistry,
+    ) -> RetrievalJob:
+        return RetrievalJob()

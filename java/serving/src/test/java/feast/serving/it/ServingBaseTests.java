@@ -28,11 +28,9 @@ import feast.proto.core.RegistryProto;
 import feast.proto.serving.ServingAPIProto;
 import feast.proto.serving.ServingAPIProto.FieldStatus;
 import feast.proto.types.ValueProto;
+import feast.serving.registry.LocalRegistryFile;
 import feast.serving.util.DataGenerator;
 import io.grpc.StatusRuntimeException;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -62,14 +60,8 @@ abstract class ServingBaseTests extends ServingEnvironment {
   static RegistryProto.Registry registryProto = readLocalRegistry();
 
   private static RegistryProto.Registry readLocalRegistry() {
-    try {
-      return RegistryProto.Registry.parseFrom(
-          Files.readAllBytes(Paths.get("src/test/resources/docker-compose/feast10/registry.db")));
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-
-    return null;
+    return new LocalRegistryFile("src/test/resources/docker-compose/feast10/registry.db")
+        .getContent();
   }
 
   @Test
@@ -176,6 +168,36 @@ abstract class ServingBaseTests extends ServingEnvironment {
     ServingAPIProto.GetOnlineFeaturesResponse resp = servingStub.getOnlineFeatures(req);
 
     for (final int featureIdx : List.of(0, 1)) {
+      assertEquals(FieldStatus.PRESENT, resp.getResults(featureIdx).getStatuses(0));
+    }
+  }
+
+  @Test
+  public void shouldGetOnlineFeaturesFromAllFeatureViews() {
+    Map<String, ValueProto.RepeatedValue> entityRows =
+        ImmutableMap.of(
+            "entity",
+                ValueProto.RepeatedValue.newBuilder()
+                    .addVal(DataGenerator.createStrValue("key-1"))
+                    .build(),
+            "driver_id",
+                ValueProto.RepeatedValue.newBuilder()
+                    .addVal(DataGenerator.createInt64Value(1005))
+                    .build());
+
+    ImmutableList<String> featureReferences =
+        ImmutableList.of(
+            "feature_view_0:feature_0",
+            "feature_view_0:feature_1",
+            "driver_hourly_stats:conv_rate",
+            "driver_hourly_stats:avg_daily_trips");
+
+    ServingAPIProto.GetOnlineFeaturesRequest req =
+        TestUtils.createOnlineFeatureRequest(featureReferences, entityRows);
+
+    ServingAPIProto.GetOnlineFeaturesResponse resp = servingStub.getOnlineFeatures(req);
+
+    for (final int featureIdx : List.of(0, 1, 2, 3)) {
       assertEquals(FieldStatus.PRESENT, resp.getResults(featureIdx).getStatuses(0));
     }
   }

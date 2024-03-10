@@ -1,5 +1,6 @@
 import click
 
+from feast.file_utils import replace_str_in_file
 from feast.infra.utils import aws_utils
 
 
@@ -34,6 +35,7 @@ def bootstrap():
         aws_utils.execute_redshift_statement(
             client,
             cluster_id,
+            None,
             database,
             user,
             "DROP TABLE IF EXISTS feast_driver_hourly_stats",
@@ -42,6 +44,7 @@ def bootstrap():
         aws_utils.upload_df_to_redshift(
             client,
             cluster_id,
+            None,
             database,
             user,
             s3,
@@ -51,9 +54,11 @@ def bootstrap():
             driver_df,
         )
 
-    repo_path = pathlib.Path(__file__).parent.absolute()
-    config_file = repo_path / "feature_store.yaml"
+    repo_path = pathlib.Path(__file__).parent.absolute() / "feature_repo"
+    example_py_file = repo_path / "example_repo.py"
+    replace_str_in_file(example_py_file, "%REDSHIFT_DATABASE%", database)
 
+    config_file = repo_path / "feature_store.yaml"
     replace_str_in_file(config_file, "%AWS_REGION%", aws_region)
     replace_str_in_file(config_file, "%REDSHIFT_CLUSTER_ID%", cluster_id)
     replace_str_in_file(config_file, "%REDSHIFT_DATABASE%", database)
@@ -62,14 +67,6 @@ def bootstrap():
         config_file, "%REDSHIFT_S3_STAGING_LOCATION%", s3_staging_location
     )
     replace_str_in_file(config_file, "%REDSHIFT_IAM_ROLE%", iam_role)
-
-
-def replace_str_in_file(file_path, match_str, sub_str):
-    with open(file_path, "r") as f:
-        contents = f.read()
-    contents = contents.replace(match_str, sub_str)
-    with open(file_path, "wt") as f:
-        f.write(contents)
 
 
 if __name__ == "__main__":

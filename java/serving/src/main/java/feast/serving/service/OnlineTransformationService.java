@@ -83,55 +83,55 @@ public class OnlineTransformationService implements TransformationService {
   @Override
   public List<ServingAPIProto.FeatureReferenceV2> extractOnDemandFeaturesDependencies(
       List<ServingAPIProto.FeatureReferenceV2> onDemandFeatureReferences) {
-    List<ServingAPIProto.FeatureReferenceV2> onDemandFeatureInputs = new ArrayList<>();
+    List<ServingAPIProto.FeatureReferenceV2> onDemandFeatureSources = new ArrayList<>();
     for (ServingAPIProto.FeatureReferenceV2 featureReference : onDemandFeatureReferences) {
       OnDemandFeatureViewProto.OnDemandFeatureViewSpec onDemandFeatureViewSpec =
           this.registryRepository.getOnDemandFeatureViewSpec(featureReference);
-      Map<String, OnDemandFeatureViewProto.OnDemandInput> inputs =
-          onDemandFeatureViewSpec.getInputsMap();
+      Map<String, OnDemandFeatureViewProto.OnDemandSource> sources =
+          onDemandFeatureViewSpec.getSourcesMap();
 
-      for (OnDemandFeatureViewProto.OnDemandInput input : inputs.values()) {
-        OnDemandFeatureViewProto.OnDemandInput.InputCase inputCase = input.getInputCase();
-        switch (inputCase) {
+      for (OnDemandFeatureViewProto.OnDemandSource source : sources.values()) {
+        OnDemandFeatureViewProto.OnDemandSource.SourceCase sourceCase = source.getSourceCase();
+        switch (sourceCase) {
           case REQUEST_DATA_SOURCE:
             // Do nothing. The value should be provided as dedicated request parameter
             break;
           case FEATURE_VIEW_PROJECTION:
             FeatureReferenceProto.FeatureViewProjection projection =
-                input.getFeatureViewProjection();
+                source.getFeatureViewProjection();
             for (FeatureProto.FeatureSpecV2 featureSpec : projection.getFeatureColumnsList()) {
               String featureName = featureSpec.getName();
-              ServingAPIProto.FeatureReferenceV2 onDemandFeatureInput =
+              ServingAPIProto.FeatureReferenceV2 onDemandFeatureSource =
                   ServingAPIProto.FeatureReferenceV2.newBuilder()
                       .setFeatureViewName(projection.getFeatureViewName())
                       .setFeatureName(featureName)
                       .build();
-              onDemandFeatureInputs.add(onDemandFeatureInput);
+              onDemandFeatureSources.add(onDemandFeatureSource);
             }
             break;
           case FEATURE_VIEW:
-            FeatureViewProto.FeatureView featureView = input.getFeatureView();
+            FeatureViewProto.FeatureView featureView = source.getFeatureView();
             FeatureViewProto.FeatureViewSpec featureViewSpec = featureView.getSpec();
             String featureViewName = featureViewSpec.getName();
             for (FeatureProto.FeatureSpecV2 featureSpec : featureViewSpec.getFeaturesList()) {
               String featureName = featureSpec.getName();
-              ServingAPIProto.FeatureReferenceV2 onDemandFeatureInput =
+              ServingAPIProto.FeatureReferenceV2 onDemandFeatureSource =
                   ServingAPIProto.FeatureReferenceV2.newBuilder()
                       .setFeatureViewName(featureViewName)
                       .setFeatureName(featureName)
                       .build();
-              onDemandFeatureInputs.add(onDemandFeatureInput);
+              onDemandFeatureSources.add(onDemandFeatureSource);
             }
             break;
           default:
             throw Status.INTERNAL
                 .withDescription(
-                    "OnDemandInput proto input field has an unexpected type: " + inputCase)
+                    "OnDemandSource proto source field has an unexpected type: " + sourceCase)
                 .asRuntimeException();
         }
       }
     }
-    return onDemandFeatureInputs;
+    return onDemandFeatureSources;
   }
 
   /** {@inheritDoc} */
@@ -239,8 +239,7 @@ public class OnlineTransformationService implements TransformationService {
     } catch (IOException e) {
       log.info(e.toString());
       throw Status.INTERNAL
-          .withDescription(
-              "Unable to correctly process transform features response: " + e.toString())
+          .withDescription("Unable to correctly process transform features response: " + e)
           .asRuntimeException();
     }
   }
@@ -249,11 +248,10 @@ public class OnlineTransformationService implements TransformationService {
   public ValueType serializeValuesIntoArrowIPC(List<Pair<String, List<ValueProto.Value>>> values) {
     // In order to be serialized correctly, the data must be packaged in a VectorSchemaRoot.
     // We first construct all the columns.
-    Map<String, FieldVector> columnNameToColumn = new HashMap<String, FieldVector>();
     BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
 
-    List<Field> columnFields = new ArrayList<Field>();
-    List<FieldVector> columns = new ArrayList<FieldVector>();
+    List<Field> columnFields = new ArrayList<>();
+    List<FieldVector> columns = new ArrayList<>();
 
     for (Pair<String, List<ValueProto.Value>> columnEntry : values) {
       // The Python FTS does not expect full feature names, so we extract the feature name.
@@ -316,13 +314,12 @@ public class OnlineTransformationService implements TransformationService {
     } catch (IOException e) {
       log.info(e.toString());
       throw Status.INTERNAL
-          .withDescription(
-              "ArrowFileWriter could not write properly; failed with error: " + e.toString())
+          .withDescription("ArrowFileWriter could not write properly; failed with error: " + e)
           .asRuntimeException();
     }
     byte[] byteData = out.toByteArray();
-    ByteString inputData = ByteString.copyFrom(byteData);
-    ValueType transformationInput = ValueType.newBuilder().setArrowValue(inputData).build();
+    ByteString sourceData = ByteString.copyFrom(byteData);
+    ValueType transformationInput = ValueType.newBuilder().setArrowValue(sourceData).build();
     return transformationInput;
   }
 }

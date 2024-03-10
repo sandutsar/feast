@@ -7,6 +7,8 @@ from google.protobuf.json_format import (  # type: ignore
     _Parser,
     _Printer,
 )
+from importlib_metadata import version as importlib_version
+from packaging import version
 
 from feast.protos.feast.serving.ServingService_pb2 import FeatureList
 from feast.protos.feast.types.Value_pb2 import RepeatedValue, Value
@@ -109,7 +111,18 @@ def _patch_feast_value_json_encoding():
                 "Value {0} has unexpected type {1}.".format(value, type(value))
             )
 
-    _patch_proto_json_encoding(Value, to_json_object, from_json_object)
+    def from_json_object_updated(
+        parser: _Parser, value: JsonObject, message: ProtoMessage, path: str
+    ):
+        from_json_object(parser, value, message)
+
+    # https://github.com/feast-dev/feast/issues/2484 Certain feast users need a higher version of protobuf but the
+    # parameters of `from_json_object` changes in feast 3.20.1. This change gives users flexibility to use earlier versions.
+    current_version = importlib_version("protobuf")
+    if version.parse(current_version) < version.parse("3.20"):
+        _patch_proto_json_encoding(Value, to_json_object, from_json_object)
+    else:
+        _patch_proto_json_encoding(Value, to_json_object, from_json_object_updated)
 
 
 def _patch_feast_repeated_value_json_encoding():
@@ -139,6 +152,13 @@ def _patch_feast_repeated_value_json_encoding():
     def to_json_object(printer: _Printer, message: ProtoMessage) -> JsonObject:
         return [printer._MessageToJsonObject(item) for item in message.val]
 
+    def from_json_object_updated(
+        parser: _Parser, value: JsonObject, message: ProtoMessage, path: str
+    ) -> None:
+        array = value if isinstance(value, list) else value["val"]
+        for item in array:
+            parser.ConvertMessage(item, message.val.add(), path)
+
     def from_json_object(
         parser: _Parser, value: JsonObject, message: ProtoMessage
     ) -> None:
@@ -146,7 +166,15 @@ def _patch_feast_repeated_value_json_encoding():
         for item in array:
             parser.ConvertMessage(item, message.val.add())
 
-    _patch_proto_json_encoding(RepeatedValue, to_json_object, from_json_object)
+    # https://github.com/feast-dev/feast/issues/2484 Certain feast users need a higher version of protobuf but the
+    # parameters of `from_json_object` changes in feast 3.20.1. This change gives users flexibility to use earlier versions.
+    current_version = importlib_version("protobuf")
+    if version.parse(current_version) < version.parse("3.20"):
+        _patch_proto_json_encoding(RepeatedValue, to_json_object, from_json_object)
+    else:
+        _patch_proto_json_encoding(
+            RepeatedValue, to_json_object, from_json_object_updated
+        )
 
 
 def _patch_feast_feature_list_json_encoding():
@@ -186,7 +214,20 @@ def _patch_feast_feature_list_json_encoding():
         array = value if isinstance(value, list) else value["val"]
         message.val.extend(array)
 
-    _patch_proto_json_encoding(FeatureList, to_json_object, from_json_object)
+    def from_json_object_updated(
+        parser: _Parser, value: JsonObject, message: ProtoMessage, path: str
+    ) -> None:
+        from_json_object(parser, value, message)
+
+    # https://github.com/feast-dev/feast/issues/2484 Certain feast users need a higher version of protobuf but the
+    # parameters of `from_json_object` changes in feast 3.20.1. This change gives users flexibility to use earlier versions.
+    current_version = importlib_version("protobuf")
+    if version.parse(current_version) < version.parse("3.20"):
+        _patch_proto_json_encoding(FeatureList, to_json_object, from_json_object)
+    else:
+        _patch_proto_json_encoding(
+            FeatureList, to_json_object, from_json_object_updated
+        )
 
 
 def patch():

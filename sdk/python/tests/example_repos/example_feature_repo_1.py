@@ -1,79 +1,100 @@
 from datetime import timedelta
 
-from feast import (
-    BigQuerySource,
-    Entity,
-    Feature,
-    FeatureService,
-    FeatureView,
-    ValueType,
-)
+from feast import Entity, FeatureService, FeatureView, Field, FileSource, PushSource
+from feast.types import Float32, Int64, String
 
-driver_locations_source = BigQuerySource(
-    table="feast-oss.public.drivers",
-    event_timestamp_column="event_timestamp",
+# Note that file source paths are not validated, so there doesn't actually need to be any data
+# at the paths for these file sources. Since these paths are effectively fake, this example
+# feature repo should not be used for historical retrieval.
+
+driver_locations_source = FileSource(
+    path="data/driver_locations.parquet",
+    timestamp_field="event_timestamp",
     created_timestamp_column="created_timestamp",
 )
 
-customer_profile_source = BigQuerySource(
+customer_profile_source = FileSource(
     name="customer_profile_source",
-    table_ref="feast-oss.public.customers",
-    event_timestamp_column="event_timestamp",
+    path="data/customer_profiles.parquet",
+    timestamp_field="event_timestamp",
 )
 
-customer_driver_combined_source = BigQuerySource(
-    table_ref="feast-oss.public.customer_driver",
-    event_timestamp_column="event_timestamp",
+customer_driver_combined_source = FileSource(
+    path="data/customer_driver_combined.parquet",
+    timestamp_field="event_timestamp",
+)
+
+driver_locations_push_source = PushSource(
+    name="driver_locations_push",
+    batch_source=driver_locations_source,
 )
 
 driver = Entity(
     name="driver",  # The name is derived from this argument, not object name.
-    join_key="driver_id",
-    value_type=ValueType.INT64,
+    join_keys=["driver_id"],
     description="driver id",
 )
 
 customer = Entity(
     name="customer",  # The name is derived from this argument, not object name.
-    join_key="customer_id",
-    value_type=ValueType.STRING,
+    join_keys=["customer_id"],
 )
 
 
 driver_locations = FeatureView(
     name="driver_locations",
-    entities=["driver"],
+    entities=[driver],
     ttl=timedelta(days=1),
-    features=[
-        Feature(name="lat", dtype=ValueType.FLOAT),
-        Feature(name="lon", dtype=ValueType.STRING),
+    schema=[
+        Field(name="lat", dtype=Float32),
+        Field(name="lon", dtype=String),
+        Field(name="driver_id", dtype=Int64),
     ],
     online=True,
-    batch_source=driver_locations_source,
+    source=driver_locations_source,
+    tags={},
+)
+
+pushed_driver_locations = FeatureView(
+    name="pushed_driver_locations",
+    entities=[driver],
+    ttl=timedelta(days=1),
+    schema=[
+        Field(name="driver_lat", dtype=Float32),
+        Field(name="driver_long", dtype=String),
+        Field(name="driver_id", dtype=Int64),
+    ],
+    online=True,
+    source=driver_locations_push_source,
     tags={},
 )
 
 customer_profile = FeatureView(
     name="customer_profile",
-    entities=["customer"],
+    entities=[customer],
     ttl=timedelta(days=1),
-    features=[
-        Feature(name="avg_orders_day", dtype=ValueType.FLOAT),
-        Feature(name="name", dtype=ValueType.STRING),
-        Feature(name="age", dtype=ValueType.INT64),
+    schema=[
+        Field(name="avg_orders_day", dtype=Float32),
+        Field(name="name", dtype=String),
+        Field(name="age", dtype=Int64),
+        Field(name="customer_id", dtype=String),
     ],
     online=True,
-    batch_source=customer_profile_source,
+    source=customer_profile_source,
     tags={},
 )
 
 customer_driver_combined = FeatureView(
     name="customer_driver_combined",
-    entities=["customer", "driver"],
+    entities=[customer, driver],
     ttl=timedelta(days=1),
-    features=[Feature(name="trips", dtype=ValueType.INT64)],
+    schema=[
+        Field(name="trips", dtype=Int64),
+        Field(name="driver_id", dtype=Int64),
+        Field(name="customer_id", dtype=String),
+    ],
     online=True,
-    batch_source=customer_driver_combined_source,
+    source=customer_driver_combined_source,
     tags={},
 )
 

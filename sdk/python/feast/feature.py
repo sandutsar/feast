@@ -15,7 +15,7 @@
 from typing import Dict, Optional
 
 from feast.protos.feast.core.Feature_pb2 import FeatureSpecV2 as FeatureSpecProto
-from feast.protos.feast.types import Value_pb2 as ValueTypeProto
+from feast.protos.feast.types.Value_pb2 import ValueType as ValueTypeProto
 from feast.value_type import ValueType
 
 
@@ -30,7 +30,11 @@ class Feature:
     """
 
     def __init__(
-        self, name: str, dtype: ValueType, labels: Optional[Dict[str, str]] = None,
+        self,
+        name: str,
+        dtype: ValueType,
+        description: str = "",
+        labels: Optional[Dict[str, str]] = None,
     ):
         """Creates a Feature object."""
         self._name = name
@@ -39,6 +43,7 @@ class Feature:
         if dtype is ValueType.UNKNOWN:
             raise ValueError(f"dtype cannot be {dtype}")
         self._dtype = dtype
+        self._description = description
         if labels is None:
             self._labels = dict()
         else:
@@ -75,6 +80,13 @@ class Feature:
         return self._dtype
 
     @property
+    def description(self) -> str:
+        """
+        Gets the description of the feature
+        """
+        return self._description
+
+    @property
     def labels(self) -> Dict[str, str]:
         """
         Gets the labels of this feature.
@@ -88,10 +100,13 @@ class Feature:
         Returns:
             A FeatureSpecProto protobuf.
         """
-        value_type = ValueTypeProto.ValueType.Enum.Value(self.dtype.name)
+        value_type = ValueTypeProto.Enum.Value(self.dtype.name)
 
         return FeatureSpecProto(
-            name=self.name, value_type=value_type, labels=self.labels,
+            name=self.name,
+            value_type=value_type,
+            description=self.description,
+            tags=self.labels,
         )
 
     @classmethod
@@ -106,7 +121,8 @@ class Feature:
         feature = cls(
             name=feature_proto.name,
             dtype=ValueType(feature_proto.value_type),
-            labels=dict(feature_proto.labels),
+            description=feature_proto.description,
+            labels=dict(feature_proto.tags),
         )
 
         return feature

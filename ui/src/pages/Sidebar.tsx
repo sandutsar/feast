@@ -6,11 +6,11 @@ import { useMatchSubpath } from "../hooks/useMatchSubpath";
 import useLoadRegistry from "../queries/useLoadRegistry";
 import RegistryPathContext from "../contexts/RegistryPathContext";
 
-import DataSourceIcon from "../data-source-icon.svg";
-import EntityIcon from "../entity-icon.svg";
-import FeatureViewIcon from "../feature-view.svg";
-import FeatureServiceIcon from "../feature-service.svg";
-import DatasetIcon from "../dataset-icon.svg";
+import { DataSourceIcon16 } from "../graphics/DataSourceIcon";
+import { EntityIcon16 } from "../graphics/EntityIcon";
+import { FeatureViewIcon16 } from "../graphics/FeatureViewIcon";
+import { FeatureServiceIcon16 } from "../graphics/FeatureServiceIcon";
+import { DatasetIcon16 } from "../graphics/DatasetIcon";
 
 const SideNav = () => {
   const registryUrl = useContext(RegistryPathContext);
@@ -60,51 +60,51 @@ const SideNav = () => {
       name: "Home",
       id: htmlIdGenerator("basicExample")(),
       onClick: () => {
-        navigate(`/p/${projectName}/`);
+        navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/`);
       },
       items: [
         {
           name: dataSourcesLabel,
           id: htmlIdGenerator("dataSources")(),
-          icon: <EuiIcon type={DataSourceIcon} />,
+          icon: <EuiIcon type={DataSourceIcon16} />,
           onClick: () => {
-            navigate(`/p/${projectName}/data-source`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/data-source`);
           },
           isSelected: useMatchSubpath("data-source"),
         },
         {
           name: entitiesLabel,
           id: htmlIdGenerator("entities")(),
-          icon: <EuiIcon type={EntityIcon} />,
+          icon: <EuiIcon type={EntityIcon16} />,
           onClick: () => {
-            navigate(`/p/${projectName}/entity`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/entity`);
           },
           isSelected: useMatchSubpath("entity"),
         },
         {
           name: featureViewsLabel,
           id: htmlIdGenerator("featureView")(),
-          icon: <EuiIcon type={FeatureViewIcon} />,
+          icon: <EuiIcon type={FeatureViewIcon16} />,
           onClick: () => {
-            navigate(`/p/${projectName}/feature-view`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/feature-view`);
           },
           isSelected: useMatchSubpath("feature-view"),
         },
         {
           name: featureServicesLabel,
           id: htmlIdGenerator("featureService")(),
-          icon: <EuiIcon type={FeatureServiceIcon} />,
+          icon: <EuiIcon type={FeatureServiceIcon16} />,
           onClick: () => {
-            navigate(`/p/${projectName}/feature-service`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/feature-service`);
           },
           isSelected: useMatchSubpath("feature-service"),
         },
         {
           name: savedDatasetsLabel,
           id: htmlIdGenerator("savedDatasets")(),
-          icon: <EuiIcon type={DatasetIcon} />,
+          icon: <EuiIcon type={DatasetIcon16} />,
           onClick: () => {
-            navigate(`/p/${projectName}/data-set`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${projectName}/data-set`);
           },
           isSelected: useMatchSubpath("data-set"),
         },

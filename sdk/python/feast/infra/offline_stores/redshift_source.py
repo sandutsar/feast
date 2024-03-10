@@ -1,10 +1,19 @@
-import warnings
 from typing import Callable, Dict, Iterable, Optional, Tuple
+
+from typeguard import typechecked
 
 from feast import type_map
 from feast.data_source import DataSource
-from feast.errors import DataSourceNotFoundException, RedshiftCredentialsError
+from feast.errors import (
+    DataSourceNoNameException,
+    DataSourceNotFoundException,
+    RedshiftCredentialsError,
+)
+from feast.feature_logging import LoggingDestination
 from feast.protos.feast.core.DataSource_pb2 import DataSource as DataSourceProto
+from feast.protos.feast.core.FeatureService_pb2 import (
+    LoggingConfig as LoggingConfigProto,
+)
 from feast.protos.feast.core.SavedDataset_pb2 import (
     SavedDatasetStorage as SavedDatasetStorageProto,
 )
@@ -13,61 +22,69 @@ from feast.saved_dataset import SavedDatasetStorage
 from feast.value_type import ValueType
 
 
+@typechecked
 class RedshiftSource(DataSource):
     def __init__(
         self,
-        event_timestamp_column: Optional[str] = "",
+        *,
+        name: Optional[str] = None,
+        timestamp_field: Optional[str] = "",
         table: Optional[str] = None,
         schema: Optional[str] = None,
         created_timestamp_column: Optional[str] = "",
         field_mapping: Optional[Dict[str, str]] = None,
-        date_partition_column: Optional[str] = "",
         query: Optional[str] = None,
-        name: Optional[str] = None,
+        description: Optional[str] = "",
+        tags: Optional[Dict[str, str]] = None,
+        owner: Optional[str] = "",
+        database: Optional[str] = "",
     ):
         """
         Creates a RedshiftSource object.
 
         Args:
-            event_timestamp_column (optional): Event timestamp column used for point in
-                time joins of feature values.
-            table (optional): Redshift table where the features are stored.
+            name (optional): Name for the source. Defaults to the table if not specified, in which
+                case the table must be specified.
+            timestamp_field (optional): Event timestamp field used for point in time
+                joins of feature values.
+            table (optional): Redshift table where the features are stored. Exactly one of 'table'
+                and 'query' must be specified.
             schema (optional): Redshift schema in which the table is located.
             created_timestamp_column (optional): Timestamp column indicating when the
                 row was created, used for deduplicating rows.
             field_mapping (optional): A dictionary mapping of column names in this data
                 source to column names in a feature table or view.
-            date_partition_column (optional): Timestamp column used for partitioning.
-            query (optional): The query to be executed to obtain the features.
-            name (optional): Name for the source. Defaults to the table_ref if not specified.
+            query (optional): The query to be executed to obtain the features. Exactly one of 'table'
+                and 'query' must be specified.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the redshift source, typically the email of the primary
+                maintainer.
+            database (optional): The Redshift database name.
         """
         if table is None and query is None:
-            raise ValueError('No "table" argument provided.')
-        _name = name
-        if not _name:
-            if table:
-                _name = table
-            else:
-                warnings.warn(
-                    (
-                        "Starting in Feast 0.21, Feast will require either a name for a data source (if using query) or `table`."
-                    ),
-                    DeprecationWarning,
-                )
-
-        super().__init__(
-            _name if _name else "",
-            event_timestamp_column,
-            created_timestamp_column,
-            field_mapping,
-            date_partition_column,
-        )
+            raise ValueError('No "table" or "query" argument provided.')
 
         # The default Redshift schema is named "public".
         _schema = "public" if table and not schema else schema
-
         self.redshift_options = RedshiftOptions(
-            table=table, schema=_schema, query=query
+            table=table, schema=_schema, query=query, database=database
+        )
+
+        # If no name, use the table as the default name.
+        if name is None and table is None:
+            raise DataSourceNoNameException()
+        name = name or table
+        assert name
+
+        super().__init__(
+            name=name,
+            timestamp_field=timestamp_field,
+            created_timestamp_column=created_timestamp_column,
+            field_mapping=field_mapping,
+            description=description,
+            tags=tags,
+            owner=owner,
         )
 
     @staticmethod
@@ -82,13 +99,17 @@ class RedshiftSource(DataSource):
             A RedshiftSource object based on the data_source protobuf.
         """
         return RedshiftSource(
-            field_mapping=dict(data_source.field_mapping),
+            name=data_source.name,
+            timestamp_field=data_source.timestamp_field,
             table=data_source.redshift_options.table,
             schema=data_source.redshift_options.schema,
-            event_timestamp_column=data_source.event_timestamp_column,
             created_timestamp_column=data_source.created_timestamp_column,
-            date_partition_column=data_source.date_partition_column,
+            field_mapping=dict(data_source.field_mapping),
             query=data_source.redshift_options.query,
+            description=data_source.description,
+            tags=dict(data_source.tags),
+            owner=data_source.owner,
+            database=data_source.redshift_options.database,
         )
 
     # Note: Python requires redefining hash in child classes that override __eq__
@@ -102,13 +123,11 @@ class RedshiftSource(DataSource):
             )
 
         return (
-            self.name == other.name
+            super().__eq__(other)
             and self.redshift_options.table == other.redshift_options.table
             and self.redshift_options.schema == other.redshift_options.schema
             and self.redshift_options.query == other.redshift_options.query
-            and self.event_timestamp_column == other.event_timestamp_column
-            and self.created_timestamp_column == other.created_timestamp_column
-            and self.field_mapping == other.field_mapping
+            and self.redshift_options.database == other.redshift_options.database
         )
 
     @property
@@ -123,8 +142,13 @@ class RedshiftSource(DataSource):
 
     @property
     def query(self):
-        """Returns the Redshift options of this Redshift source."""
+        """Returns the Redshift query of this Redshift source."""
         return self.redshift_options.query
+
+    @property
+    def database(self):
+        """Returns the Redshift database of this Redshift source."""
+        return self.redshift_options.database
 
     def to_proto(self) -> DataSourceProto:
         """
@@ -134,14 +158,16 @@ class RedshiftSource(DataSource):
             A DataSourceProto object.
         """
         data_source_proto = DataSourceProto(
+            name=self.name,
             type=DataSourceProto.BATCH_REDSHIFT,
             field_mapping=self.field_mapping,
             redshift_options=self.redshift_options.to_proto(),
+            description=self.description,
+            tags=self.tags,
+            owner=self.owner,
+            timestamp_field=self.timestamp_field,
+            created_timestamp_column=self.created_timestamp_column,
         )
-
-        data_source_proto.event_timestamp_column = self.event_timestamp_column
-        data_source_proto.created_timestamp_column = self.created_timestamp_column
-        data_source_proto.date_partition_column = self.date_partition_column
 
         return data_source_proto
 
@@ -178,16 +204,33 @@ class RedshiftSource(DataSource):
         assert isinstance(config.offline_store, RedshiftOfflineStoreConfig)
 
         client = aws_utils.get_redshift_data_client(config.offline_store.region)
-
-        if self.table is not None:
+        if self.table:
             try:
-                table = client.describe_table(
-                    ClusterIdentifier=config.offline_store.cluster_id,
-                    Database=config.offline_store.database,
-                    DbUser=config.offline_store.user,
-                    Table=self.table,
-                    Schema=self.schema,
-                )
+                paginator = client.get_paginator("describe_table")
+
+                paginator_kwargs = {
+                    "Database": (
+                        self.database
+                        if self.database
+                        else config.offline_store.database
+                    ),
+                    "Table": self.table,
+                    "Schema": self.schema,
+                }
+
+                if config.offline_store.cluster_id:
+                    # Provisioned cluster
+                    paginator_kwargs[
+                        "ClusterIdentifier"
+                    ] = config.offline_store.cluster_id
+                    paginator_kwargs["DbUser"] = config.offline_store.user
+                elif config.offline_store.workgroup:
+                    # Redshift serverless
+                    paginator_kwargs["WorkgroupName"] = config.offline_store.workgroup
+
+                response_iterator = paginator.paginate(**paginator_kwargs)
+                table = response_iterator.build_full_result()
+
             except ClientError as e:
                 if e.response["Error"]["Code"] == "ValidationException":
                     raise RedshiftCredentialsError() from e
@@ -202,7 +245,8 @@ class RedshiftSource(DataSource):
             statement_id = aws_utils.execute_redshift_statement(
                 client,
                 config.offline_store.cluster_id,
-                config.offline_store.database,
+                config.offline_store.workgroup,
+                self.database if self.database else config.offline_store.database,
                 config.offline_store.user,
                 f"SELECT * FROM ({self.query}) LIMIT 1",
             )
@@ -215,45 +259,20 @@ class RedshiftSource(DataSource):
 
 class RedshiftOptions:
     """
-    DataSource Redshift options used to source features from Redshift query.
+    Configuration options for a Redshift data source.
     """
 
     def __init__(
-        self, table: Optional[str], schema: Optional[str], query: Optional[str]
+        self,
+        table: Optional[str],
+        schema: Optional[str],
+        query: Optional[str],
+        database: Optional[str],
     ):
-        self._table = table
-        self._schema = schema
-        self._query = query
-
-    @property
-    def query(self):
-        """Returns the Redshift SQL query referenced by this source."""
-        return self._query
-
-    @query.setter
-    def query(self, query):
-        """Sets the Redshift SQL query referenced by this source."""
-        self._query = query
-
-    @property
-    def table(self):
-        """Returns the table name of this Redshift table."""
-        return self._table
-
-    @table.setter
-    def table(self, table_name):
-        """Sets the table ref of this Redshift table."""
-        self._table = table_name
-
-    @property
-    def schema(self):
-        """Returns the schema name of this Redshift table."""
-        return self._schema
-
-    @schema.setter
-    def schema(self, schema):
-        """Sets the schema of this Redshift table."""
-        self._schema = schema
+        self.table = table or ""
+        self.schema = schema or ""
+        self.query = query or ""
+        self.database = database or ""
 
     @classmethod
     def from_proto(cls, redshift_options_proto: DataSourceProto.RedshiftOptions):
@@ -270,9 +289,46 @@ class RedshiftOptions:
             table=redshift_options_proto.table,
             schema=redshift_options_proto.schema,
             query=redshift_options_proto.query,
+            database=redshift_options_proto.database,
         )
 
         return redshift_options
+
+    @property
+    def fully_qualified_table_name(self) -> str:
+        """
+        The fully qualified table name of this Redshift table.
+
+        Returns:
+            A string in the format of <database>.<schema>.<table>
+            May be empty or None if the table is not set
+        """
+
+        if not self.table:
+            return ""
+
+        # self.table may already contain the database and schema
+        parts = self.table.split(".")
+        if len(parts) == 3:
+            database, schema, table = parts
+        elif len(parts) == 2:
+            database = self.database
+            schema, table = parts
+        elif len(parts) == 1:
+            database = self.database
+            schema = self.schema
+            table = parts[0]
+        else:
+            raise ValueError(
+                f"Invalid table name: {self.table} - can't determine database and schema"
+            )
+
+        if database and schema:
+            return f"{database}.{schema}.{table}"
+        elif schema:
+            return f"{schema}.{table}"
+        else:
+            return table
 
     def to_proto(self) -> DataSourceProto.RedshiftOptions:
         """
@@ -282,7 +338,10 @@ class RedshiftOptions:
             A RedshiftOptionsProto protobuf.
         """
         redshift_options_proto = DataSourceProto.RedshiftOptions(
-            table=self.table, schema=self.schema, query=self.query,
+            table=self.table,
+            schema=self.schema,
+            query=self.query,
+            database=self.database,
         )
 
         return redshift_options_proto
@@ -295,12 +354,11 @@ class SavedDatasetRedshiftStorage(SavedDatasetStorage):
 
     def __init__(self, table_ref: str):
         self.redshift_options = RedshiftOptions(
-            table=table_ref, schema=None, query=None
+            table=table_ref, schema=None, query=None, database=None
         )
 
     @staticmethod
     def from_proto(storage_proto: SavedDatasetStorageProto) -> SavedDatasetStorage:
-
         return SavedDatasetRedshiftStorage(
             table_ref=RedshiftOptions.from_proto(storage_proto.redshift_storage).table
         )
@@ -312,3 +370,28 @@ class SavedDatasetRedshiftStorage(SavedDatasetStorage):
 
     def to_data_source(self) -> DataSource:
         return RedshiftSource(table=self.redshift_options.table)
+
+
+class RedshiftLoggingDestination(LoggingDestination):
+    _proto_kind = "redshift_destination"
+
+    table_name: str
+
+    def __init__(self, *, table_name: str):
+        self.table_name = table_name
+
+    @classmethod
+    def from_proto(cls, config_proto: LoggingConfigProto) -> "LoggingDestination":
+        return RedshiftLoggingDestination(
+            table_name=config_proto.redshift_destination.table_name,
+        )
+
+    def to_proto(self) -> LoggingConfigProto:
+        return LoggingConfigProto(
+            redshift_destination=LoggingConfigProto.RedshiftDestination(
+                table_name=self.table_name
+            )
+        )
+
+    def to_data_source(self) -> DataSource:
+        return RedshiftSource(table=self.table_name)

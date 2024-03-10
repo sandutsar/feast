@@ -1,5 +1,7 @@
 FROM python:3.9-slim
 
+RUN apt-get update && apt-get install -y git
+
 # Allow statements and log messages to immediately appear in the Knative logs
 ENV PYTHONUNBUFFERED True
 
@@ -13,11 +15,13 @@ COPY sdk/python/feast/infra/feature_servers/gcp_cloudrun/app.py ./app.py
 # Copy necessary parts of the Feast codebase
 COPY sdk/python ./sdk/python
 COPY protos ./protos
+COPY setup.py setup.py
+COPY pyproject.toml pyproject.toml
 COPY README.md ./README.md
 
 # Install production dependencies.
-RUN pip install --no-cache-dir \
-    -e 'sdk/python[gcp,redis]' \
+RUN --mount=source=.git,target=.git,type=bind pip install --no-cache-dir \
+    -e '.[gcp,redis]' \
     -r ./sdk/python/feast/infra/feature_servers/gcp_cloudrun/requirements.txt
 
 # Run the web service on container startup. Here we use the gunicorn

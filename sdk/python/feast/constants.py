@@ -23,6 +23,9 @@ AWS_LAMBDA_FEATURE_SERVER_REPOSITORY = "feast-python-server"
 # feature_store.yaml environment variable name for remote feature server
 FEATURE_STORE_YAML_ENV_NAME: str = "FEATURE_STORE_YAML_BASE64"
 
+# feature_store.yaml path environment variable name
+FEAST_FS_YAML_FILE_PATH_ENV_NAME: str = "FEAST_FS_YAML_FILE_PATH"
+
 # Environment variable for registry
 REGISTRY_ENV_NAME: str = "REGISTRY_BASE64"
 
@@ -40,6 +43,9 @@ FEATURE_TRANSFORMATION_SERVER_PORT_ENV_NAME: str = "FEATURE_TRANSFORMATION_SERVE
 
 # Default FTS port
 DEFAULT_FEATURE_TRANSFORMATION_SERVER_PORT = 6569
+
+# Default registry server port
+DEFAULT_REGISTRY_SERVER_PORT = 6570
 
 # Environment variable for feature server docker image tag
 DOCKER_IMAGE_TAG_ENV_NAME: str = "FEAST_SERVER_DOCKER_IMAGE_TAG"

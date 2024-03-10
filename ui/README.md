@@ -1,61 +1,121 @@
-# [WIP] Feast Web UI
+# [Experimental] Feast Web UI
 
-![Sample UI](sample.png)
+![Sample UI](https://github.com/feast-dev/feast/blob/master/ui/sample.png)
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
-## Project structure
-The Web UI is powered by a JSON registry dump from Feast (running `feast registry-dump`). Running `yarn start` launches a UI
-powered by test data. 
-- `public/` contains assets as well as demo data loaded by the Web UI.
-  - There is a `projects-list.json` which represents all Feast projects the UI shows. 
-  - There is also a `registry.json` which is the registry dump for the feature repo.
-- `feature_repo/` contains a sample Feast repo which generates the `registry.json`
-- `src/` contains the Web UI source code. This parses the registry json blob in  `src/parsers` to make this data 
-available for the rest of the UI.
-- `src/custom-tabs` includes sample custom tabs. This is a WIP plugin system where users can inject their own tabs and 
-data to the UI.
+## Usage
 
+There are three modes of usage: 
+- via the `feast ui` CLI to view the current feature repository
+- importing the UI as a module
+- running the entire build as a React app.
 
-## Available Scripts
+### Importing the UI as a module
 
-In the project directory, you can run:
+This is the recommended way to use Feast UI for teams maintaining their own internal UI for their deployment of Feast.
 
-### `yarn start`
+Start with bootstrapping a React app with `create-react-app`
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+```
+npx create-react-app your-feast-ui
+```
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+Then, in your app folder, install Feast UI and its peer dependencies. Assuming you use yarn
 
-### `yarn test`
+```
+yarn add @feast-dev/feast-ui
+yarn add @elastic/eui @elastic/datemath @emotion/react moment prop-types inter-ui react-query react-router-dom use-query-params zod typescript query-string d3 @types/d3
+```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+Edit `index.js` in the React app to use Feast UI.
 
-### `yarn build`
+```js
+import React from "react";
+import ReactDOM from "react-dom";
+import "./index.css";
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+import FeastUI from "@feast-dev/feast-ui";
+import "@feast-dev/feast-ui/dist/feast-ui.css";
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+ReactDOM.render(
+  <React.StrictMode>
+    <FeastUI />
+  </React.StrictMode>,
+  document.getElementById("root")
+);
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+When you start the React app, it will look for `projects-list.json` to find a list of your projects. The JSON should looks something like this.
 
-### `yarn eject`
+```json
+{
+  "projects": [
+    {
+      "name": "Credit Score Project",
+      "description": "Project for credit scoring team and associated models.",
+      "id": "credit_score_project",
+      "registryPath": "/registry.json"
+    },
+  ]
+}
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
+* **Note** - `registryPath` only supports a file location or a url.
 
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+```
+// Start the React App
+yarn start
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
+#### Customization
 
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
+The advantage of importing Feast UI as a module is in the ease of customization. The `<FeastUI>` component exposes a `feastUIConfigs` prop thorough which you can customize the UI. Currently it supports a few parameters.
 
-## Learn More
+##### Fetching the Project List
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+You can use `projectListPromise` to provide a promise that overrides where the Feast UI fetches the project list from.
+
+```jsx
+<FeastUI
+  feastUIConfigs={{
+    projectListPromise: fetch(SOME_PATH, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+    }).then((res) => {
+      return res.json();
+    })
+  }}
+/>
+```
+
+##### Custom Tabs
+
+You can add custom tabs for any of the core Feast objects through the `tabsRegistry`.
+
+```
+const tabsRegistry = {
+  RegularFeatureViewCustomTabs: [
+    {
+      label: "Custom Tab Demo", // Navigation Label for the tab
+      path: "demo-tab", // Subpath for the tab
+      Component: RFVDemoCustomTab, // a React Component
+    },
+  ]
+}
+
+<FeastUI
+  feastUIConfigs={{
+    tabsRegistry: tabsRegistry,
+  }}
+/>
+```
+
+Examples of custom tabs can be found in the `/custom-tabs` folder.
+
+## On React and Create React App
+
+This project was bootstrapped with Create React App, and uses its scripts to simplify UI development. You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
 
 To learn React, check out the [React documentation](https://reactjs.org/).

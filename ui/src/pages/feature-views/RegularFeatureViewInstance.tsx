@@ -1,28 +1,29 @@
-import React from "react";
-import { Route, Routes, useNavigate } from "react-router";
+import React, { useContext } from "react";
+import { Route, Routes, useNavigate } from "react-router-dom";
 import {
   EuiPageHeader,
   EuiPageContent,
   EuiPageContentBody,
 } from "@elastic/eui";
 
-import FeatureViewIcon from "../../feature-view.svg";
-import { enabledFeatureStatistics } from "../,,/../../flags";
+import { FeatureViewIcon32 } from "../../graphics/FeatureViewIcon";
+
 import { useMatchExact, useMatchSubpath } from "../../hooks/useMatchSubpath";
-import { FeastFeatureViewType } from "../../parsers/feastFeatureViews";
 import RegularFeatureViewOverviewTab from "./RegularFeatureViewOverviewTab";
-import FeatureViewSummaryStatisticsTab from "./FeatureViewSummaryStatisticsTab";
 
 import {
   useRegularFeatureViewCustomTabs,
-  regularFeatureViewCustomTabRoutes,
-} from "../CustomTabUtils";
+  useRegularFeatureViewCustomTabRoutes,
+} from "../../custom-tabs/TabsRegistryContext";
+import FeatureFlagsContext from "../../contexts/FeatureFlagsContext";
+import { feast } from "../../protos";
 
 interface RegularFeatureInstanceProps {
-  data: FeastFeatureViewType;
+  data: feast.core.IFeatureView;
 }
 
 const RegularFeatureInstance = ({ data }: RegularFeatureInstanceProps) => {
+  const { enabledFeatureStatistics } = useContext(FeatureFlagsContext);
   const navigate = useNavigate();
 
   const { customNavigationTabs } = useRegularFeatureViewCustomTabs(navigate);
@@ -49,12 +50,14 @@ const RegularFeatureInstance = ({ data }: RegularFeatureInstanceProps) => {
 
   tabs.push(...customNavigationTabs);
 
+  const TabRoutes = useRegularFeatureViewCustomTabRoutes();
+
   return (
     <React.Fragment>
       <EuiPageHeader
         restrictWidth
-        iconType={FeatureViewIcon}
-        pageTitle={`${data.spec.name}`}
+        iconType={FeatureViewIcon32}
+        pageTitle={`${data?.spec?.name}`}
         tabs={tabs}
       />
       <EuiPageContent
@@ -70,11 +73,7 @@ const RegularFeatureInstance = ({ data }: RegularFeatureInstanceProps) => {
               path="/"
               element={<RegularFeatureViewOverviewTab data={data} />}
             />
-            <Route
-              path="/statistics"
-              element={<FeatureViewSummaryStatisticsTab />}
-            />
-            {regularFeatureViewCustomTabRoutes()}
+            {TabRoutes}
           </Routes>
         </EuiPageContentBody>
       </EuiPageContent>

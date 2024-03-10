@@ -11,9 +11,9 @@ import {
   EuiTitle,
   EuiHorizontalRule,
 } from "@elastic/eui";
-import useLoadProjectsList from "../queries/useLoadProjectsList";
+import { useLoadProjectsList } from "../contexts/ProjectListContext";
 import { useNavigate } from "react-router-dom";
-import feastIconBlue from "../feast-icon-blue.svg";
+import FeastIconBlue from "../graphics/FeastIconBlue";
 
 const RootProjectSelectionPage = () => {
   const { isLoading, isSuccess, data } = useLoadProjectsList();
@@ -22,12 +22,12 @@ const RootProjectSelectionPage = () => {
   useEffect(() => {
     if (data && data.default) {
       // If a default is set, redirect there.
-      navigate(`/p/${data.default}`);
+      navigate(`${process.env.PUBLIC_URL || ""}/p/${data.default}`);
     }
 
     if (data && data.projects.length === 1) {
       // If there is only one project, redirect there.
-      navigate(`/p/${data.projects[0].id}`);
+      navigate(`${process.env.PUBLIC_URL || ""}/p/${data.projects[0].id}`);
     }
   }, [data, navigate]);
 
@@ -35,11 +35,11 @@ const RootProjectSelectionPage = () => {
     return (
       <EuiFlexItem key={index}>
         <EuiCard
-          icon={<EuiIcon size="xxl" type={feastIconBlue} />}
+          icon={<EuiIcon size="xxl" type={FeastIconBlue} />}
           title={`${item.name}`}
           description={item?.description || ""}
           onClick={() => {
-            navigate(`/p/${item.id}`);
+            navigate(`${process.env.PUBLIC_URL || ""}/p/${item.id}`);
           }}
         />
       </EuiFlexItem>

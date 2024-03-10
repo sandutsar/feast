@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from google.protobuf.json_format import MessageToJson
+from typeguard import typechecked
 
 from feast.protos.feast.core.Entity_pb2 import Entity as EntityProto
 from feast.protos.feast.core.Entity_pb2 import EntityMeta as EntityMetaProto
@@ -23,6 +24,7 @@ from feast.usage import log_exceptions
 from feast.value_type import ValueType
 
 
+@typechecked
 class Entity:
     """
     An entity defines a collection of entities for which features can be defined. An
@@ -36,8 +38,7 @@ class Entity:
             with their associated features. If not specified, defaults to the name.
         description: A human-readable description.
         tags: A dictionary of key-value pairs to store arbitrary metadata.
-        owner: The owner of the feature service, typically the email of the primary
-            maintainer.
+        owner: The owner of the entity, typically the email of the primary maintainer.
         created_timestamp: The time when the entity was created.
         last_updated_timestamp: The time when the entity was last updated.
     """
@@ -54,17 +55,46 @@ class Entity:
     @log_exceptions
     def __init__(
         self,
+        *,
         name: str,
-        value_type: ValueType = ValueType.UNKNOWN,
+        join_keys: Optional[List[str]] = None,
+        value_type: Optional[ValueType] = None,
         description: str = "",
-        join_key: Optional[str] = None,
         tags: Optional[Dict[str, str]] = None,
         owner: str = "",
     ):
-        """Creates an Entity object."""
+        """
+        Creates an Entity object.
+
+        Args:
+            name: The unique name of the entity.
+            join_keys (optional): A list of properties that uniquely identifies different entities
+                within the collection. This currently only supports a list of size one, but is
+                intended to eventually support multiple join keys.
+            value_type (optional): The type of the entity, such as string or float. If not specified,
+                it will be inferred from the schema of the underlying data source.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the entity, typically the email of the primary maintainer.
+
+        Raises:
+            ValueError: Parameters are specified incorrectly.
+        """
         self.name = name
-        self.value_type = value_type
-        self.join_key = join_key if join_key else name
+        self.value_type = value_type or ValueType.UNKNOWN
+
+        if join_keys and len(join_keys) > 1:
+            # TODO(felixwang9817): When multiple join keys are supported, add a `join_keys` attribute
+            # and deprecate the `join_key` attribute.
+            raise ValueError(
+                "An entity may only have a single join key. "
+                "Multiple join keys will be supported in the future."
+            )
+        elif join_keys and len(join_keys) == 1:
+            self.join_key = join_keys[0]
+        else:
+            self.join_key = self.name
+
         self.description = description
         self.tags = tags if tags is not None else {}
         self.owner = owner
@@ -72,7 +102,7 @@ class Entity:
         self.last_updated_timestamp = None
 
     def __hash__(self) -> int:
-        return hash((id(self), self.name))
+        return hash((self.name, self.join_key))
 
     def __eq__(self, other):
         if not isinstance(other, Entity):
@@ -92,6 +122,9 @@ class Entity:
 
     def __str__(self):
         return str(MessageToJson(self.to_proto()))
+
+    def __lt__(self, other):
+        return self.name < other.name
 
     def is_valid(self):
         """
@@ -119,12 +152,13 @@ class Entity:
         """
         entity = cls(
             name=entity_proto.spec.name,
-            value_type=ValueType(entity_proto.spec.value_type),
-            join_key=entity_proto.spec.join_key,
+            join_keys=[entity_proto.spec.join_key],
             description=entity_proto.spec.description,
-            tags=entity_proto.spec.tags,
+            tags=dict(entity_proto.spec.tags),
             owner=entity_proto.spec.owner,
         )
+
+        entity.value_type = ValueType(entity_proto.spec.value_type)
 
         if entity_proto.meta.HasField("created_timestamp"):
             entity.created_timestamp = entity_proto.meta.created_timestamp.ToDatetime()

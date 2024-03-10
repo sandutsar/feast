@@ -1,12 +1,15 @@
 import contextlib
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import (
+    Any,
     Callable,
     ContextManager,
     Dict,
     Iterator,
     List,
+    Literal,
     Optional,
     Tuple,
     Union,
@@ -14,15 +17,16 @@ from typing import (
 
 import numpy as np
 import pandas as pd
+import pyarrow
 import pyarrow as pa
 from dateutil import parser
-from pydantic import StrictStr
-from pydantic.typing import Literal
+from pydantic import StrictStr, model_validator
 from pytz import utc
 
 from feast import OnDemandFeatureView, RedshiftSource
 from feast.data_source import DataSource
 from feast.errors import InvalidEntityType
+from feast.feature_logging import LoggingConfig, LoggingSource
 from feast.feature_view import DUMMY_ENTITY_ID, DUMMY_ENTITY_VAL, FeatureView
 from feast.infra.offline_stores import offline_utils
 from feast.infra.offline_stores.offline_store import (
@@ -30,28 +34,34 @@ from feast.infra.offline_stores.offline_store import (
     RetrievalJob,
     RetrievalMetadata,
 )
-from feast.infra.offline_stores.redshift_source import SavedDatasetRedshiftStorage
+from feast.infra.offline_stores.redshift_source import (
+    RedshiftLoggingDestination,
+    SavedDatasetRedshiftStorage,
+)
+from feast.infra.registry.base_registry import BaseRegistry
 from feast.infra.utils import aws_utils
-from feast.registry import Registry
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
 from feast.usage import log_exceptions_and_usage
 
 
 class RedshiftOfflineStoreConfig(FeastConfigBaseModel):
-    """ Offline store config for AWS Redshift """
+    """Offline store config for AWS Redshift"""
 
     type: Literal["redshift"] = "redshift"
     """ Offline store type selector"""
 
-    cluster_id: StrictStr
-    """ Redshift cluster identifier """
+    cluster_id: Optional[StrictStr] = None
+    """ Redshift cluster identifier, for provisioned clusters """
+
+    user: Optional[StrictStr] = None
+    """ Redshift user name, only required for provisioned clusters """
+
+    workgroup: Optional[StrictStr] = None
+    """ Redshift workgroup identifier, for serverless """
 
     region: StrictStr
     """ Redshift cluster's AWS region """
-
-    user: StrictStr
-    """ Redshift user name """
 
     database: StrictStr
     """ Redshift database name """
@@ -62,6 +72,26 @@ class RedshiftOfflineStoreConfig(FeastConfigBaseModel):
     iam_role: StrictStr
     """ IAM Role for Redshift, granting it access to S3 """
 
+    @model_validator(mode="after")
+    def require_cluster_and_user_or_workgroup(self):
+        """
+        Provisioned Redshift clusters:  Require cluster_id and user, ignore workgroup
+        Serverless Redshift:  Require workgroup, ignore cluster_id and user
+        """
+        cluster_id, user, workgroup = (
+            self.cluster_id,
+            self.user,
+            self.workgroup,
+        )
+        if not (cluster_id and user) and not workgroup:
+            raise ValueError(
+                "please specify either cluster_id & user if using provisioned clusters, or workgroup if using serverless"
+            )
+        elif cluster_id and workgroup:
+            raise ValueError("cannot specify both cluster_id and workgroup")
+
+        return self
+
 
 class RedshiftOfflineStore(OfflineStore):
     @staticmethod
@@ -71,7 +101,7 @@ class RedshiftOfflineStore(OfflineStore):
         data_source: DataSource,
         join_key_columns: List[str],
         feature_name_columns: List[str],
-        event_timestamp_column: str,
+        timestamp_field: str,
         created_timestamp_column: Optional[str],
         start_date: datetime,
         end_date: datetime,
@@ -86,7 +116,7 @@ class RedshiftOfflineStore(OfflineStore):
             partition_by_join_key_string = (
                 "PARTITION BY " + partition_by_join_key_string
             )
-        timestamp_columns = [event_timestamp_column]
+        timestamp_columns = [timestamp_field]
         if created_timestamp_column:
             timestamp_columns.append(created_timestamp_column)
         timestamp_desc_string = " DESC, ".join(timestamp_columns) + " DESC"
@@ -110,7 +140,7 @@ class RedshiftOfflineStore(OfflineStore):
                 SELECT {field_string},
                 ROW_NUMBER() OVER({partition_by_join_key_string} ORDER BY {timestamp_desc_string}) AS _feast_row
                 FROM {from_expression}
-                WHERE {event_timestamp_column} BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+                WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
             )
             WHERE _feast_row = 1
             """
@@ -130,15 +160,16 @@ class RedshiftOfflineStore(OfflineStore):
         data_source: DataSource,
         join_key_columns: List[str],
         feature_name_columns: List[str],
-        event_timestamp_column: str,
+        timestamp_field: str,
         start_date: datetime,
         end_date: datetime,
     ) -> RetrievalJob:
+        assert isinstance(config.offline_store, RedshiftOfflineStoreConfig)
         assert isinstance(data_source, RedshiftSource)
         from_expression = data_source.get_table_query_string()
 
         field_string = ", ".join(
-            join_key_columns + feature_name_columns + [event_timestamp_column]
+            join_key_columns + feature_name_columns + [timestamp_field]
         )
 
         redshift_client = aws_utils.get_redshift_data_client(
@@ -152,7 +183,7 @@ class RedshiftOfflineStore(OfflineStore):
         query = f"""
             SELECT {field_string}
             FROM {from_expression}
-            WHERE {event_timestamp_column} BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
         """
 
         return RedshiftRetrievalJob(
@@ -170,11 +201,13 @@ class RedshiftOfflineStore(OfflineStore):
         feature_views: List[FeatureView],
         feature_refs: List[str],
         entity_df: Union[pd.DataFrame, str],
-        registry: Registry,
+        registry: BaseRegistry,
         project: str,
         full_feature_names: bool = False,
     ) -> RetrievalJob:
         assert isinstance(config.offline_store, RedshiftOfflineStoreConfig)
+        for fv in feature_views:
+            assert isinstance(fv.batch_source, RedshiftSource)
 
         redshift_client = aws_utils.get_redshift_data_client(
             config.offline_store.region
@@ -185,12 +218,15 @@ class RedshiftOfflineStore(OfflineStore):
             entity_df, redshift_client, config, s3_resource
         )
 
-        entity_df_event_timestamp_col = offline_utils.infer_event_timestamp_from_entity_df(
-            entity_schema
+        entity_df_event_timestamp_col = (
+            offline_utils.infer_event_timestamp_from_entity_df(entity_schema)
         )
 
         entity_df_event_timestamp_range = _get_entity_df_event_timestamp_range(
-            entity_df, entity_df_event_timestamp_col, redshift_client, config,
+            entity_df,
+            entity_df_event_timestamp_col,
+            redshift_client,
+            config,
         )
 
         @contextlib.contextmanager
@@ -235,6 +271,7 @@ class RedshiftOfflineStore(OfflineStore):
                 aws_utils.execute_redshift_statement(
                     redshift_client,
                     config.offline_store.cluster_id,
+                    config.offline_store.workgroup,
                     config.offline_store.database,
                     config.offline_store.user,
                     f"DROP TABLE IF EXISTS {table_name}",
@@ -255,6 +292,86 @@ class RedshiftOfflineStore(OfflineStore):
                 min_event_timestamp=entity_df_event_timestamp_range[0],
                 max_event_timestamp=entity_df_event_timestamp_range[1],
             ),
+        )
+
+    @staticmethod
+    def write_logged_features(
+        config: RepoConfig,
+        data: Union[pyarrow.Table, Path],
+        source: LoggingSource,
+        logging_config: LoggingConfig,
+        registry: BaseRegistry,
+    ):
+        destination = logging_config.destination
+        assert isinstance(destination, RedshiftLoggingDestination)
+
+        redshift_client = aws_utils.get_redshift_data_client(
+            config.offline_store.region
+        )
+        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+        if isinstance(data, Path):
+            s3_path = f"{config.offline_store.s3_staging_location}/logged_features/{uuid.uuid4()}"
+        else:
+            s3_path = f"{config.offline_store.s3_staging_location}/logged_features/{uuid.uuid4()}.parquet"
+
+        aws_utils.upload_arrow_table_to_redshift(
+            table=data,
+            redshift_data_client=redshift_client,
+            cluster_id=config.offline_store.cluster_id,
+            workgroup=config.offline_store.workgroup,
+            database=config.offline_store.database,
+            user=config.offline_store.user,
+            s3_resource=s3_resource,
+            s3_path=s3_path,
+            iam_role=config.offline_store.iam_role,
+            table_name=destination.table_name,
+            schema=source.get_schema(registry),
+            fail_if_exists=False,
+        )
+
+    @staticmethod
+    def offline_write_batch(
+        config: RepoConfig,
+        feature_view: FeatureView,
+        table: pyarrow.Table,
+        progress: Optional[Callable[[int], Any]],
+    ):
+        assert isinstance(config.offline_store, RedshiftOfflineStoreConfig)
+        assert isinstance(feature_view.batch_source, RedshiftSource)
+
+        pa_schema, column_names = offline_utils.get_pyarrow_schema_from_batch_source(
+            config, feature_view.batch_source
+        )
+        if column_names != table.column_names:
+            raise ValueError(
+                f"The input pyarrow table has schema {table.schema} with the incorrect columns {table.column_names}. "
+                f"The schema is expected to be {pa_schema} with the columns (in this exact order) to be {column_names}."
+            )
+
+        if table.schema != pa_schema:
+            table = table.cast(pa_schema)
+
+        redshift_options = feature_view.batch_source.redshift_options
+        redshift_client = aws_utils.get_redshift_data_client(
+            config.offline_store.region
+        )
+        s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
+
+        aws_utils.upload_arrow_table_to_redshift(
+            table=table,
+            redshift_data_client=redshift_client,
+            cluster_id=config.offline_store.cluster_id,
+            workgroup=config.offline_store.workgroup,
+            database=redshift_options.database
+            # Users can define database in the source if needed but it's not required.
+            or config.offline_store.database,
+            user=config.offline_store.user,
+            s3_resource=s3_resource,
+            s3_path=f"{config.offline_store.s3_staging_location}/push/{uuid.uuid4()}.parquet",
+            iam_role=config.offline_store.iam_role,
+            table_name=redshift_options.fully_qualified_table_name,
+            schema=pa_schema,
+            fail_if_exists=False,
         )
 
 
@@ -298,9 +415,7 @@ class RedshiftRetrievalJob(RetrievalJob):
             + str(uuid.uuid4())
         )
         self._full_feature_names = full_feature_names
-        self._on_demand_feature_views = (
-            on_demand_feature_views if on_demand_feature_views else []
-        )
+        self._on_demand_feature_views = on_demand_feature_views or []
         self._metadata = metadata
 
     @property
@@ -308,15 +423,16 @@ class RedshiftRetrievalJob(RetrievalJob):
         return self._full_feature_names
 
     @property
-    def on_demand_feature_views(self) -> Optional[List[OnDemandFeatureView]]:
+    def on_demand_feature_views(self) -> List[OnDemandFeatureView]:
         return self._on_demand_feature_views
 
     @log_exceptions_and_usage
-    def _to_df_internal(self) -> pd.DataFrame:
+    def _to_df_internal(self, timeout: Optional[int] = None) -> pd.DataFrame:
         with self._query_generator() as query:
             return aws_utils.unload_redshift_query_to_df(
                 self._redshift_client,
                 self._config.offline_store.cluster_id,
+                self._config.offline_store.workgroup,
                 self._config.offline_store.database,
                 self._config.offline_store.user,
                 self._s3_resource,
@@ -326,11 +442,12 @@ class RedshiftRetrievalJob(RetrievalJob):
             )
 
     @log_exceptions_and_usage
-    def _to_arrow_internal(self) -> pa.Table:
+    def _to_arrow_internal(self, timeout: Optional[int] = None) -> pa.Table:
         with self._query_generator() as query:
             return aws_utils.unload_redshift_query_to_pa(
                 self._redshift_client,
                 self._config.offline_store.cluster_id,
+                self._config.offline_store.workgroup,
                 self._config.offline_store.database,
                 self._config.offline_store.user,
                 self._s3_resource,
@@ -341,7 +458,7 @@ class RedshiftRetrievalJob(RetrievalJob):
 
     @log_exceptions_and_usage
     def to_s3(self) -> str:
-        """ Export dataset to S3 in Parquet format and return path """
+        """Export dataset to S3 in Parquet format and return path"""
         if self.on_demand_feature_views:
             transformed_df = self.to_df()
             aws_utils.upload_df_to_s3(self._s3_resource, self._s3_path, transformed_df)
@@ -351,6 +468,7 @@ class RedshiftRetrievalJob(RetrievalJob):
             aws_utils.execute_redshift_query_and_unload_to_s3(
                 self._redshift_client,
                 self._config.offline_store.cluster_id,
+                self._config.offline_store.workgroup,
                 self._config.offline_store.database,
                 self._config.offline_store.user,
                 self._s3_path,
@@ -361,12 +479,13 @@ class RedshiftRetrievalJob(RetrievalJob):
 
     @log_exceptions_and_usage
     def to_redshift(self, table_name: str) -> None:
-        """ Save dataset as a new Redshift table """
+        """Save dataset as a new Redshift table"""
         if self.on_demand_feature_views:
             transformed_df = self.to_df()
             aws_utils.upload_df_to_redshift(
                 self._redshift_client,
                 self._config.offline_store.cluster_id,
+                self._config.offline_store.workgroup,
                 self._config.offline_store.database,
                 self._config.offline_store.user,
                 self._s3_resource,
@@ -383,18 +502,31 @@ class RedshiftRetrievalJob(RetrievalJob):
             aws_utils.execute_redshift_statement(
                 self._redshift_client,
                 self._config.offline_store.cluster_id,
+                self._config.offline_store.workgroup,
                 self._config.offline_store.database,
                 self._config.offline_store.user,
                 query,
             )
 
-    def persist(self, storage: SavedDatasetStorage):
+    def persist(
+        self,
+        storage: SavedDatasetStorage,
+        allow_overwrite: Optional[bool] = False,
+        timeout: Optional[int] = None,
+    ):
         assert isinstance(storage, SavedDatasetRedshiftStorage)
         self.to_redshift(table_name=storage.redshift_options.table)
 
     @property
     def metadata(self) -> Optional[RetrievalMetadata]:
         return self._metadata
+
+    def supports_remote_storage_export(self) -> bool:
+        return True
+
+    def to_remote_storage(self) -> List[str]:
+        path = self.to_s3()
+        return aws_utils.list_s3_files(self._config.offline_store.region, path)
 
 
 def _upload_entity_df(
@@ -409,6 +541,7 @@ def _upload_entity_df(
         aws_utils.upload_df_to_redshift(
             redshift_client,
             config.offline_store.cluster_id,
+            config.offline_store.workgroup,
             config.offline_store.database,
             config.offline_store.user,
             s3_resource,
@@ -422,6 +555,7 @@ def _upload_entity_df(
         aws_utils.execute_redshift_statement(
             redshift_client,
             config.offline_store.cluster_id,
+            config.offline_store.workgroup,
             config.offline_store.database,
             config.offline_store.user,
             f"CREATE TABLE {table_name} AS ({entity_df})",
@@ -477,6 +611,7 @@ def _get_entity_df_event_timestamp_range(
         statement_id = aws_utils.execute_redshift_statement(
             redshift_client,
             config.offline_store.cluster_id,
+            config.offline_store.workgroup,
             config.offline_store.database,
             config.offline_store.user,
             f"SELECT MIN({entity_df_event_timestamp_col}) AS min, MAX({entity_df_event_timestamp_col}) AS max "
@@ -546,9 +681,9 @@ WITH entity_dataframe AS (
 
  1. We first join the current feature_view to the entity dataframe that has been passed.
  This JOIN has the following logic:
-    - For each row of the entity dataframe, only keep the rows where the `event_timestamp_column`
+    - For each row of the entity dataframe, only keep the rows where the `timestamp_field`
     is less than the one provided in the entity dataframe
-    - If there a TTL for the current feature_view, also keep the rows where the `event_timestamp_column`
+    - If there a TTL for the current feature_view, also keep the rows where the `timestamp_field`
     is higher the the one provided minus the TTL
     - For each row, Join on the entity key and retrieve the `entity_row_unique_id` that has been
     computed previously
@@ -559,16 +694,16 @@ WITH entity_dataframe AS (
 
 {{ featureview.name }}__subquery AS (
     SELECT
-        {{ featureview.event_timestamp_column }} as event_timestamp,
+        {{ featureview.timestamp_field }} as event_timestamp,
         {{ featureview.created_timestamp_column ~ ' as created_timestamp,' if featureview.created_timestamp_column else '' }}
         {{ featureview.entity_selections | join(', ')}}{% if featureview.entity_selections %},{% else %}{% endif %}
         {% for feature in featureview.features %}
             {{ feature }} as {% if full_feature_names %}{{ featureview.name }}__{{featureview.field_mapping.get(feature, feature)}}{% else %}{{ featureview.field_mapping.get(feature, feature) }}{% endif %}{% if loop.last %}{% else %}, {% endif %}
         {% endfor %}
     FROM {{ featureview.table_subquery }}
-    WHERE {{ featureview.event_timestamp_column }} <= '{{ featureview.max_event_timestamp }}'
+    WHERE {{ featureview.timestamp_field }} <= '{{ featureview.max_event_timestamp }}'
     {% if featureview.ttl == 0 %}{% else %}
-    AND {{ featureview.event_timestamp_column }} >= '{{ featureview.min_event_timestamp }}'
+    AND {{ featureview.timestamp_field }} >= '{{ featureview.min_event_timestamp }}'
     {% endif %}
 ),
 

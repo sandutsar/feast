@@ -17,6 +17,9 @@
 package feast.serving.registry;
 
 import feast.proto.core.*;
+import feast.proto.core.FeatureServiceProto.FeatureService;
+import feast.proto.core.FeatureViewProto.FeatureView;
+import feast.proto.core.OnDemandFeatureViewProto.OnDemandFeatureView;
 import feast.proto.serving.ServingAPIProto;
 import feast.serving.exception.SpecRetrievalException;
 import java.util.List;
@@ -26,16 +29,17 @@ import java.util.stream.Collectors;
 
 public class Registry {
   private final RegistryProto.Registry registry;
-  private Map<String, FeatureViewProto.FeatureViewSpec> featureViewNameToSpec;
+  private final Map<String, FeatureViewProto.FeatureViewSpec> featureViewNameToSpec;
   private Map<String, OnDemandFeatureViewProto.OnDemandFeatureViewSpec>
       onDemandFeatureViewNameToSpec;
-  private Map<String, FeatureServiceProto.FeatureServiceSpec> featureServiceNameToSpec;
+  private final Map<String, FeatureServiceProto.FeatureServiceSpec> featureServiceNameToSpec;
+  private final Map<String, String> entityNameToJoinKey;
 
   Registry(RegistryProto.Registry registry) {
     this.registry = registry;
     List<FeatureViewProto.FeatureViewSpec> featureViewSpecs =
         registry.getFeatureViewsList().stream()
-            .map(fv -> fv.getSpec())
+            .map(FeatureView::getSpec)
             .collect(Collectors.toList());
     this.featureViewNameToSpec =
         featureViewSpecs.stream()
@@ -43,7 +47,7 @@ public class Registry {
                 Collectors.toMap(FeatureViewProto.FeatureViewSpec::getName, Function.identity()));
     List<OnDemandFeatureViewProto.OnDemandFeatureViewSpec> onDemandFeatureViewSpecs =
         registry.getOnDemandFeatureViewsList().stream()
-            .map(odfv -> odfv.getSpec())
+            .map(OnDemandFeatureView::getSpec)
             .collect(Collectors.toList());
     this.onDemandFeatureViewNameToSpec =
         onDemandFeatureViewSpecs.stream()
@@ -53,10 +57,16 @@ public class Registry {
                     Function.identity()));
     this.featureServiceNameToSpec =
         registry.getFeatureServicesList().stream()
-            .map(fs -> fs.getSpec())
+            .map(FeatureService::getSpec)
             .collect(
                 Collectors.toMap(
                     FeatureServiceProto.FeatureServiceSpec::getName, Function.identity()));
+    this.entityNameToJoinKey =
+        registry.getEntitiesList().stream()
+            .map(EntityProto.Entity::getSpec)
+            .collect(
+                Collectors.toMap(
+                    EntityProto.EntitySpecV2::getName, EntityProto.EntitySpecV2::getJoinKey));
   }
 
   public RegistryProto.Registry getRegistry() {
@@ -111,5 +121,13 @@ public class Registry {
           String.format("Unable to find feature service with name: %s", name));
     }
     return spec;
+  }
+
+  public String getEntityJoinKey(String name) {
+    String joinKey = entityNameToJoinKey.get(name);
+    if (joinKey == null) {
+      throw new SpecRetrievalException(String.format("Unable to find entity with name: %s", name));
+    }
+    return joinKey;
   }
 }

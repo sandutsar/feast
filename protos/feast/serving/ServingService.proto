@@ -105,6 +105,8 @@ message GetOnlineFeaturesResponse {
         repeated FieldStatus statuses = 2;
         repeated google.protobuf.Timestamp event_timestamps = 3;
     }
+
+    bool status = 3;
 }
 
 message GetOnlineFeaturesResponseMetadata {
@@ -119,7 +121,7 @@ enum FieldStatus {
     PRESENT = 1;
 
     // Values could be found for entity key and age is within max age, but
-    // this field value is assigned a value on ingestion into feast.
+    // this field value is not assigned a value on ingestion into feast.
     NULL_VALUE = 2;
 
     // Entity key did not return any values as they do not exist in Feast.

@@ -1,12 +1,11 @@
 import React from "react";
 import { EuiEmptyPrompt, EuiTitle, EuiLink, EuiButton } from "@elastic/eui";
-
-import feastIconBlue from "../../feast-icon-blue.svg";
+import FeastIconBlue from "../../graphics/FeastIconBlue";
 
 const FeatureServiceIndexEmptyState = () => {
   return (
     <EuiEmptyPrompt
-      iconType={feastIconBlue}
+      iconType={FeastIconBlue}
       title={<h2>There are no feature services</h2>}
       body={
         <p>
@@ -18,7 +17,7 @@ const FeatureServiceIndexEmptyState = () => {
         <EuiButton
           onClick={() => {
             window.open(
-              "https://docs.feast.dev/getting-started/concepts/feature-service",
+              "https://docs.feast.dev/getting-started/concepts/feature-retrieval#feature-services",
               "_blank"
             );
           }}

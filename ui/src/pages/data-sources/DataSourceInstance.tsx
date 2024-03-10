@@ -6,26 +6,22 @@ import {
   EuiPageContentBody,
 } from "@elastic/eui";
 
-import DataSourceIcon from "../../data-source-icon.svg";
-import { useMatchExact, useMatchSubpath } from "../../hooks/useMatchSubpath";
+import { DataSourceIcon32 } from "../../graphics/DataSourceIcon";
+import { useMatchExact } from "../../hooks/useMatchSubpath";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import DataSourceRawData from "./DataSourceRawData";
 import DataSourceOverviewTab from "./DataSourceOverviewTab";
-import DataSourceDbt from "./DataSourceDbt";
-import useLoadDataSource from "./useLoadDataSource";
 
 import {
   useDataSourceCustomTabs,
-  dataSourceCustomTabRoutes,
-} from "../CustomTabUtils";
+  useDataSourceCustomTabRoutes,
+} from "../../custom-tabs/TabsRegistryContext";
 
 const DataSourceInstance = () => {
   const navigate = useNavigate();
   let { dataSourceName } = useParams();
 
   useDocumentTitle(`${dataSourceName} | Data Source | Feast`);
-  const dsName = dataSourceName === undefined ? "" : dataSourceName;
-  const { isSuccess, data } = useLoadDataSource(dsName);
 
   let tabs = [
     {
@@ -37,25 +33,16 @@ const DataSourceInstance = () => {
     },
   ];
 
-  const dbtTab = {
-    label: "Dbt Definition",
-    isSelected: useMatchSubpath("dbt"),
-    onClick: () => {
-      navigate("dbt");
-    },
-  };
-  if (isSuccess && data?.bigqueryOptions?.dbtModelSerialized) {
-    tabs.push(dbtTab);
-  }
-
   const { customNavigationTabs } = useDataSourceCustomTabs(navigate);
   tabs = tabs.concat(customNavigationTabs);
+
+  const CustomTabRoutes = useDataSourceCustomTabRoutes();
 
   return (
     <React.Fragment>
       <EuiPageHeader
         restrictWidth
-        iconType={DataSourceIcon}
+        iconType={DataSourceIcon32}
         pageTitle={`Data Source: ${dataSourceName}`}
         tabs={tabs}
       />
@@ -70,8 +57,7 @@ const DataSourceInstance = () => {
           <Routes>
             <Route path="/" element={<DataSourceOverviewTab />} />
             <Route path="/raw-data" element={<DataSourceRawData />} />
-            <Route path="/dbt" element={<DataSourceDbt />} />
-            {dataSourceCustomTabRoutes()}
+            {CustomTabRoutes}
           </Routes>
         </EuiPageContentBody>
       </EuiPageContent>

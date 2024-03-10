@@ -12,7 +12,7 @@ import {
   EuiFlexItem,
 } from "@elastic/eui";
 
-import FeatureViewIcon from "../../feature-view.svg";
+import { FeatureViewIcon32 } from "../../graphics/FeatureViewIcon";
 
 import useLoadRegistry from "../../queries/useLoadRegistry";
 import FeatureViewListingTable from "./FeatureViewListingTable";
@@ -48,7 +48,7 @@ const shouldIncludeFVsGivenTokenGroups = (
   tagTokenGroups: Record<string, string[]>
 ) => {
   return Object.entries(tagTokenGroups).every(([key, values]) => {
-    const entryTagValue = entry.object.spec.tags
+    const entryTagValue = entry?.object?.spec!.tags
       ? entry.object.spec.tags[key]
       : undefined;
 
@@ -117,7 +117,7 @@ const Index = () => {
     <React.Fragment>
       <EuiPageHeader
         restrictWidth
-        iconType={FeatureViewIcon}
+        iconType={FeatureViewIcon32}
         pageTitle="Feature Views"
       />
       <EuiPageContent

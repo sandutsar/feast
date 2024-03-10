@@ -16,10 +16,9 @@ import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pydantic import StrictStr
-from pydantic.schema import Literal
 
 from feast import Entity
 from feast.feature_view import FeatureView
@@ -37,7 +36,7 @@ from feast.utils import to_naive_utc
 
 
 class SqliteOnlineStoreConfig(FeastConfigBaseModel):
-    """ Online store config for local (SQLite-based) store """
+    """Online store config for local (SQLite-based) store"""
 
     type: Literal[
         "sqlite", "feast.infra.online_stores.sqlite.SqliteOnlineStore"
@@ -50,8 +49,7 @@ class SqliteOnlineStoreConfig(FeastConfigBaseModel):
 
 class SqliteOnlineStore(OnlineStore):
     """
-    OnlineStore is an object used for all interaction between Feast and the service used for offline storage of
-    features.
+    SQLite implementation of the online store interface. Not recommended for production usage.
 
     Attributes:
         _conn: SQLite connection.
@@ -95,7 +93,10 @@ class SqliteOnlineStore(OnlineStore):
 
         with conn:
             for entity_key, values, timestamp, created_ts in data:
-                entity_key_bin = serialize_entity_key(entity_key)
+                entity_key_bin = serialize_entity_key(
+                    entity_key,
+                    entity_key_serialization_version=config.entity_key_serialization_version,
+                )
                 timestamp = to_naive_utc(timestamp)
                 if created_ts is not None:
                     created_ts = to_naive_utc(created_ts)
@@ -153,7 +154,13 @@ class SqliteOnlineStore(OnlineStore):
                 f"FROM {_table_id(config.project, table)} "
                 f"WHERE entity_key IN ({','.join('?' * len(entity_keys))}) "
                 f"ORDER BY entity_key",
-                [serialize_entity_key(entity_key) for entity_key in entity_keys],
+                [
+                    serialize_entity_key(
+                        entity_key,
+                        entity_key_serialization_version=config.entity_key_serialization_version,
+                    )
+                    for entity_key in entity_keys
+                ],
             )
             rows = cur.fetchall()
 
@@ -161,7 +168,10 @@ class SqliteOnlineStore(OnlineStore):
             k: list(group) for k, group in itertools.groupby(rows, key=lambda r: r[0])
         }
         for entity_key in entity_keys:
-            entity_key_bin = serialize_entity_key(entity_key)
+            entity_key_bin = serialize_entity_key(
+                entity_key,
+                entity_key_serialization_version=config.entity_key_serialization_version,
+            )
             res = {}
             res_ts = None
             for _, feature_name, val_bin, ts in rows.get(entity_key_bin, []):
@@ -211,7 +221,10 @@ class SqliteOnlineStore(OnlineStore):
                 path=self._get_db_path(config),
                 name=_table_id(project, FeatureView.from_proto(view)),
             )
-            for view in desired_registry_proto.feature_views
+            for view in [
+                *desired_registry_proto.feature_views,
+                *desired_registry_proto.stream_feature_views,
+            ]
         ]
         return infra_objects
 
@@ -230,7 +243,9 @@ class SqliteOnlineStore(OnlineStore):
 def _initialize_conn(db_path: str):
     Path(db_path).parent.mkdir(exist_ok=True)
     return sqlite3.connect(
-        db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        db_path,
+        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+        check_same_thread=False,
     )
 
 
@@ -278,7 +293,10 @@ class SqliteTable(InfraObject):
 
     @staticmethod
     def from_proto(sqlite_table_proto: SqliteTableProto) -> Any:
-        return SqliteTable(path=sqlite_table_proto.path, name=sqlite_table_proto.name,)
+        return SqliteTable(
+            path=sqlite_table_proto.path,
+            name=sqlite_table_proto.name,
+        )
 
     def update(self):
         self.conn.execute(

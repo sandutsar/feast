@@ -2,38 +2,43 @@ import doctest
 import importlib
 import pkgutil
 import sys
+import traceback
 import unittest
 
 import feast
+
+FILES_TO_IGNORE = {"app"}
 
 
 def setup_feature_store():
     """Prepares the local environment for a FeatureStore docstring test."""
     from datetime import datetime, timedelta
 
-    from feast import Entity, Feature, FeatureStore, FeatureView, FileSource, ValueType
+    from feast import Entity, FeatureStore, FeatureView, Field, FileSource
     from feast.repo_operations import init_repo
+    from feast.types import Float32, Int64
 
-    init_repo("feature_repo", "local")
-    fs = FeatureStore(repo_path="feature_repo")
+    init_repo("project", "local")
+    fs = FeatureStore(repo_path="project/feature_repo")
     driver = Entity(
-        name="driver_id", value_type=ValueType.INT64, description="driver id",
+        name="driver_id",
+        description="driver id",
     )
     driver_hourly_stats = FileSource(
-        path="feature_repo/data/driver_stats.parquet",
-        event_timestamp_column="event_timestamp",
+        path="project/feature_repo/data/driver_stats.parquet",
+        timestamp_field="event_timestamp",
         created_timestamp_column="created",
     )
     driver_hourly_stats_view = FeatureView(
         name="driver_hourly_stats",
-        entities=["driver_id"],
+        entities=[driver],
         ttl=timedelta(seconds=86400 * 1),
-        features=[
-            Feature(name="conv_rate", dtype=ValueType.FLOAT),
-            Feature(name="acc_rate", dtype=ValueType.FLOAT),
-            Feature(name="avg_daily_trips", dtype=ValueType.INT64),
+        schema=[
+            Field(name="conv_rate", dtype=Float32),
+            Field(name="acc_rate", dtype=Float32),
+            Field(name="avg_daily_trips", dtype=Int64),
         ],
-        batch_source=driver_hourly_stats,
+        source=driver_hourly_stats,
     )
     fs.apply([driver_hourly_stats_view, driver])
     fs.materialize(
@@ -46,7 +51,7 @@ def teardown_feature_store():
     """Cleans up the local environment after a FeatureStore docstring test."""
     import shutil
 
-    shutil.rmtree("feature_repo", ignore_errors=True)
+    shutil.rmtree("project", ignore_errors=True)
 
 
 def test_docstrings():
@@ -66,8 +71,10 @@ def test_docstrings():
 
         for package in current_packages:
             for _, name, is_pkg in pkgutil.walk_packages(package.__path__):
-                full_name = package.__name__ + "." + name
+                if name in FILES_TO_IGNORE:
+                    continue
 
+                full_name = package.__name__ + "." + name
                 try:
                     temp_module = importlib.import_module(full_name)
                     if is_pkg:
@@ -89,7 +96,8 @@ def test_docstrings():
                         setup_function()
 
                     test_suite = doctest.DocTestSuite(
-                        temp_module, optionflags=doctest.ELLIPSIS,
+                        temp_module,
+                        optionflags=doctest.ELLIPSIS,
                     )
                     if test_suite.countTestCases() > 0:
                         result = unittest.TextTestRunner(sys.stdout).run(test_suite)
@@ -98,7 +106,7 @@ def test_docstrings():
                             failed_cases.append(result.failures)
                 except Exception as e:
                     successful = False
-                    failed_cases.append((full_name, e))
+                    failed_cases.append((full_name, str(e) + traceback.format_exc()))
                 finally:
                     if teardown_function:
                         teardown_function()

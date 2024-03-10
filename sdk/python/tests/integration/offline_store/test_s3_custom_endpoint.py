@@ -17,7 +17,9 @@ from tests.integration.feature_repos.universal.entities import customer, driver
 @pytest.mark.skip(
     reason="No way to run this test today. Credentials conflict with real AWS credentials in CI"
 )
-def test_registration_and_retrieval_from_custom_s3_endpoint(universal_data_sources,):
+def test_registration_and_retrieval_from_custom_s3_endpoint(
+    universal_data_sources,
+):
     config = IntegrationTestRepoConfig(
         offline_store_creator="tests.integration.feature_repos.universal.data_sources.file.S3FileDataSourceCreator"
     )
@@ -45,7 +47,7 @@ def test_registration_and_retrieval_from_custom_s3_endpoint(universal_data_sourc
         fs.materialize(environment.start_date, environment.end_date)
 
         out = fs.get_online_features(
-            features=["driver_stats:conv_rate"], entity_rows=[{"driver": 5001}]
+            features=["driver_stats:conv_rate"], entity_rows=[{"driver_id": 5001}]
         ).to_dict()
         assert out["conv_rate"][0] is not None
 
